@@ -1,0 +1,13 @@
+service MealService {
+	rpc GenerateBreakfast(GenerateMealRequest) returns (GenerateMealResponse);
+	rpc GenerateLunch(GenerateMealRequest) returns (GenerateMealResponse);
+	rpc GenerateDinner(GenerateMealRequest) returns (GenerateMealResponse);
+}
+
+message GenerateMealRequest {
+	int64 chat_id = 1;
+}
+
+message GenerateMealResponse {
+	repeated string dishes = 1;
+}
