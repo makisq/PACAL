@@ -49,15 +49,6 @@ func (mb *MemoryBus) Stats() string {
 		mb.cacheHits, total, 100*float32(mb.cacheHits)/float32(total))
 }
 
-func (mb *MemoryBus) adjustCacheSize() {
-	hitRate := mb.cacheHits / (mb.cacheHits + mb.cacheMisses)
-	if hitRate > 0.7 {
-		mb.cacheSize += 10
-	} else if hitRate < 0.3 {
-		mb.cacheSize -= 10
-	}
-}
-
 type Syncable interface {
 	Sync()
 }
@@ -75,7 +66,7 @@ func NewMemoryBus(rom *ROM16x4, ram *RAM16x4, terminal *Terminal, romSize int, r
 		romSize:   romSize,
 		ramSize:   ramSize,
 		cache:     make(map[int][4]bool),
-		cacheSize: 32, // Например, кэш на 32 адреса
+		cacheSize: 32,
 	}
 
 	mb.devices = append(mb.devices, terminal)
