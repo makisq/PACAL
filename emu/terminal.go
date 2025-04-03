@@ -4,17 +4,35 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
+	"time"
 )
 
 type Terminal struct {
-	ScreenBuffer [80 * 25]byte
-	CursorPos    int
-	KeyBuffer    []byte
-	InputMode    bool
-	Echo         bool
-	ControlChars map[byte]func(*Terminal)
-	bufferMutex  sync.Mutex
+	ScreenBuffer    [80 * 25]byte
+	CursorPos       int
+	KeyBuffer       []byte
+	InteractiveMode bool
+	spinnerActive   bool
+	InputMode       bool
+	Echo            bool
+	ControlChars    map[byte]func(*Terminal)
+	bufferMutex     sync.Mutex
+	cpu             *CPUContext
+}
+
+func (t *Terminal) WriteRune(r rune) {
+	t.bufferMutex.Lock()
+	defer t.bufferMutex.Unlock()
+	if t.CursorPos >= len(t.ScreenBuffer) {
+		t.scrollScreenUnsafe()
+	}
+	t.ScreenBuffer[t.CursorPos] = byte(r)
+	t.CursorPos++
+	if t.Echo {
+		fmt.Printf("%c", r)
+	}
 }
 
 func NewTerminal() *Terminal {
@@ -78,6 +96,20 @@ func (t *Terminal) readKeyUnsafe() byte {
 	key := t.KeyBuffer[0]
 	t.KeyBuffer = t.KeyBuffer[1:]
 	return key
+}
+
+func (cpu *CPUContext) ExecuteMultiLine(code string) error {
+	lines := strings.Split(code, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if err := cpu.executeCommand(line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (t *Terminal) Write(addr [4]bool, data [4]bool, clock bool) {
@@ -164,11 +196,57 @@ func (t *Terminal) CaptureInput() {
 		}
 
 		t.bufferMutex.Lock()
+
+		// Обработка Ctrl+Enter
+		if char == '\x0A' && len(t.KeyBuffer) > 0 && t.KeyBuffer[len(t.KeyBuffer)-1] == '\x1A' {
+			t.cpu.SwitchInterfaceMode()
+			t.KeyBuffer = t.KeyBuffer[:len(t.KeyBuffer)-1]
+			t.bufferMutex.Unlock()
+			continue
+		}
+
 		t.KeyBuffer = append(t.KeyBuffer, byte(char))
 		t.bufferMutex.Unlock()
+	}
+}
 
-		if t.InputMode && t.Echo && char != '\n' {
-			t.WriteChar(byte(char))
+func (t *Terminal) RunWithSpinner(fn func()) {
+	if !t.InteractiveMode {
+		fn()
+		return
+	}
+
+	t.spinnerActive = true
+	defer func() { t.spinnerActive = false }()
+
+	go t.showSpinner()
+	fn()
+}
+
+func (t *Terminal) ClearLine() {
+	fmt.Print("\r\033[K")
+}
+
+func (t *Terminal) CursorBack() {
+	fmt.Print("\b")
+}
+
+func (t *Terminal) showSpinner() {
+	frames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+	for t.spinnerActive {
+		for _, frame := range frames {
+			fmt.Printf("\r%s Обработка...", frame)
+			time.Sleep(100 * time.Millisecond)
+			if !t.spinnerActive {
+				fmt.Printf("\r")
+				return
+			}
 		}
 	}
+
+}
+
+func (cpu *CPUContext) setInterfaceMode(mode int) {
+	cpu.interfaceMode = mode
+	fmt.Printf("\nРежим переключен на: %s\n", map[int]string{0: "Shell", 1: "Pipeline"}[mode])
 }
