@@ -28,6 +28,7 @@ const (
 	OpLoad
 	OpStore
 	OpJmp
+	OpRet
 	OpJz
 	OpJnz
 	OpJc
@@ -36,6 +37,7 @@ const (
 	OpEI
 	OpDI
 	OpCode = iota
+	OpCall = iota + 19
 )
 
 var mus sync.RWMutex
@@ -644,23 +646,39 @@ func convertToInstruction(parts []string, labels map[string][4]bool) (Instructio
 		"and": OpAnd, "or": OpOr, "xor": OpXor, "cmp": OpCmp,
 		"load": OpLoad, "store": OpStore, "jmp": OpJmp,
 		"jz": OpJz, "jnz": OpJnz, "jc": OpJc, "hlt": OpHalt,
+		"call": OpCall, "ret": OpRet,
 	}[parts[0]]
 	if !ok {
 		return Instruction{}, fmt.Errorf("неизвестная команда: %s", parts[0])
 	}
 
 	instr := Instruction{OpCode: opcode}
-
-	if len(parts) > 1 {
-		if opcode == OpHalt {
-
-			if len(parts) > 1 {
-				return instr, fmt.Errorf("команда HLT не принимает аргументов")
-			}
-			instr.OpCode = OpHalt
-			return instr, nil
+	if opcode == OpHalt || opcode == OpRet {
+		if len(parts) > 1 {
+			return instr, fmt.Errorf("команда %s не принимает аргументов", parts[0])
+		}
+		return instr, nil
+	}
+	if opcode == OpCall {
+		if len(parts) < 2 {
+			return instr, fmt.Errorf("недостаточно аргументов для CALL")
+		}
+		arg, err := parseArg(parts[1], true, pipelineMode, labels)
+		if err != nil {
+			return instr, fmt.Errorf("неверный аргумент для CALL: %v", err)
 		}
 
+		if arg.isReg {
+			instr.Reg1 = arg.value
+		} else if arg.isImm {
+			instr.Imm = arg.bits
+		} else {
+			instr.Label = parts[1]
+		}
+
+		return instr, nil
+	}
+	if len(parts) > 1 {
 		if reg, err := parseArg(parts[1], opcode == OpMov, pipelineMode, labels); err == nil {
 			if reg.isReg {
 				instr.Reg1 = reg.value
@@ -845,10 +863,42 @@ func (cpu *CPUContext) executeInstruction(instr Instruction) error {
 		return nil
 	case OpHalt:
 		return cpu.executeHalt(instr)
+	case OpCall:
+		return cpu.executeCall(instr)
+	case OpRet:
+		return cpu.executeRet(instr)
 
 	default:
 		return fmt.Errorf("неизвестный код операции: %d", instr.OpCode)
 	}
+}
+
+func (cpu *CPUContext) executeRet(instr Instruction) error {
+	returnAddr := cpu.regFile.Read(3)
+	var addr [4]bool
+	copy(addr[:], returnAddr[:4])
+	cpu.pc.Write(addr)
+	return nil
+}
+
+func (cpu *CPUContext) executeCall(instr Instruction) error {
+	currentPC := cpu.pc.Read()
+	nextPC := increment4Bit(currentPC)
+	cpu.regFile.Write(3, boolToByteSlice(nextPC[:]))
+	if instr.Reg1 >= 0 {
+		target := cpu.regFile.Read(instr.Reg1)
+		var targetAddr [4]bool
+		copy(targetAddr[:], target[:4])
+		cpu.pc.Write(targetAddr)
+	} else if instr.Label != "" {
+		if addr, ok := cpu.labels[instr.Label]; ok {
+			cpu.pc.Write(addr)
+		} else {
+			return fmt.Errorf("неизвестная метка: %s", instr.Label)
+		}
+	}
+
+	return nil
 }
 
 func (cpu *CPUContext) executeMov(instr Instruction) error {
@@ -1161,6 +1211,20 @@ func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
 		instr.Reg1 = -1
 		instr.Reg2 = -1
 		instr.Imm = [4]bool{false, false, false, false}
+	case "call":
+		instr.OpCode = OpCall
+		if len(args) < 1 {
+			return instr, fmt.Errorf("недостаточно аргументов для CALL")
+		}
+		if strings.HasPrefix(args[0], "r") {
+			reg, err := parseRegister(args[0])
+			if err != nil {
+				return instr, fmt.Errorf("неверный регистр для CALL: %v", err)
+			}
+			instr.Reg1 = reg
+		} else {
+			instr.Label = args[0]
+		}
 
 	default:
 		return instr, fmt.Errorf("неизвестная команда: %s", cmd)
@@ -1380,6 +1444,8 @@ func (c *Command) String() string {
 		OpJnz:   "jnz",
 		OpJc:    "jc",
 		OpHalt:  "hlt",
+		OpCall:  "call",
+		OpRet:   "ret",
 	}
 	if name, ok := opCodeNames[c.OpCode]; ok {
 		return name
@@ -1403,6 +1469,9 @@ func decodeInstruction(instr [4]bool) (op int, reg1 int, reg2 int) {
 
 		return op, boolToInt(instr[2]), boolToInt(instr[3])
 
+	}
+	if op == OpCall {
+		return op, boolToInt(instr[2]), boolToInt(instr[3])
 	}
 
 	return op, 0, 0
