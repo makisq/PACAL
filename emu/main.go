@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,6 +24,10 @@ func main() {
 	fmt.Printf("Эмулятор процессора v%s (commit %s, built %s)\n", version, commit, date)
 	fmt.Printf("Тактовая частота: %v, Режим отладки: %v\n", *clockSpeed, *debugMode)
 	cpu := InitializeCPU()
+	err := cpu.LoadProgram("start:\nmov r0, 5\nhlt")
+	if err != nil {
+		log.Fatal(err)
+	}
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)
 	go cpu.Run()
