@@ -634,10 +634,72 @@ func convertToInstruction(parts []string) (Instruction, error) {
 func (cpu *CPUContext) executeInstruction(instr Instruction) error {
 	switch instr.OpCode {
 	case OpMov:
-		return cpu.executeMovInstr(instr)
-	case OpAdd:
-		return cpu.executeALUOp(instr)
-	// ... остальные команды
+		var value [4]bool
+		if instr.Reg2 >= 0 {
+			srcVal := cpu.regFile.Read(instr.Reg2)
+			copy(value[:], srcVal[:4])
+		} else {
+			value = instr.Imm
+		}
+		cpu.regFile.Write(instr.Reg1, boolToByteSlice(value[:]))
+		return nil
+
+	case OpAdd, OpSub, OpMul, OpAnd, OpOr, OpXor, OpCmp:
+		aBits := cpu.regFile.Read(instr.Reg1)
+		bBits := cpu.regFile.Read(instr.Reg2)
+
+		cpu.alu.aBits = aBits[:]
+		cpu.alu.bBits = bBits[:]
+		cpu.alu.op = instr.OpCode
+
+		result, flags, err := cpu.alu.Execute()
+		if err != nil {
+			return err
+		}
+
+		cpu.regFile.Write(instr.Reg1, boolToByteSlice(result[:]))
+		cpu.alu.flags = flags
+		return nil
+
+	case OpLoad:
+		// LOAD Rd, [Rs]
+		addrBits := cpu.regFile.Read(instr.Reg2)
+		addr := boolSliceTo4Bits(addrBits[:4])
+		data := cpu.bus.Read(addr)
+		cpu.regFile.Write(instr.Reg1, boolToByteSlice(data[:]))
+		return nil
+
+	case OpStore:
+		// STORE [Rd], Rs
+		addrBits := cpu.regFile.Read(instr.Reg1)
+		dataBits := cpu.regFile.Read(instr.Reg2)
+		addr := boolSliceTo4Bits(addrBits[:4])
+		data := boolSliceTo4Bits(dataBits[:4])
+		cpu.bus.Write(addr, data, true)
+		return nil
+
+	case OpJmp:
+		// JMP label/Rs
+		return cpu.executeJump(instr)
+	case OpJz:
+		// JZ label/Rs
+		if cpu.alu.flags.zero {
+			return cpu.executeJump(instr)
+		}
+		return nil
+	case OpJnz:
+		// JNZ label/Rs
+		if !cpu.alu.flags.zero {
+			return cpu.executeJump(instr)
+		}
+		return nil
+	case OpJc:
+		// JC label/Rs
+		if cpu.alu.flags.carry {
+			return cpu.executeJump(instr)
+		}
+		return nil
+
 	default:
 		return fmt.Errorf("неизвестный код операции: %d", instr.OpCode)
 	}
