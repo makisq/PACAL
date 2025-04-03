@@ -416,7 +416,7 @@ func showProgress(total, current int) {
 
 func CommandShell(cpu *CPUContext) {
 	initCommands()
-	cpu.terminal.cpu = cpu 
+	cpu.terminal.cpu = cpu
 
 	fmt.Println("Эмулятор процессора. Введите 'help' для списка команд")
 	fmt.Println("Ctrl+Enter для переключения режимов")
@@ -464,7 +464,7 @@ func (cpu *CPUContext) pipelineExecuteCommand(line string) error {
 		return err
 	}
 
-	return executeInstruction(instr)
+	return cpu.executeInstruction(instr)
 }
 
 func (cpu *CPUContext) shellExecuteCommand(line string) error {
