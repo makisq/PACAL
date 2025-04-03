@@ -416,7 +416,7 @@ func showProgress(total, current int) {
 
 func CommandShell(cpu *CPUContext) {
 	initCommands()
-	cpu.terminal.cpu = cpu // Устанавливаем ссылку
+	cpu.terminal.cpu = cpu 
 
 	fmt.Println("Эмулятор процессора. Введите 'help' для списка команд")
 	fmt.Println("Ctrl+Enter для переключения режимов")
@@ -439,7 +439,6 @@ func CommandShell(cpu *CPUContext) {
 	}
 }
 func (cpu *CPUContext) pipelineExecuteCommand(line string) error {
-	// Удаляем комментарии
 	if i := strings.Index(line, ";"); i >= 0 {
 		line = line[:i]
 	}
@@ -448,8 +447,6 @@ func (cpu *CPUContext) pipelineExecuteCommand(line string) error {
 	if line == "" {
 		return nil
 	}
-
-	// Обработка меток
 	if strings.HasSuffix(line, ":") {
 		label := strings.TrimSuffix(line, ":")
 		addr := cpu.pc.Read()
