@@ -677,13 +677,22 @@ func convertToInstruction(parts []string, labels map[string][4]bool) (Instructio
 }
 
 type parsedArg struct {
-	isReg bool
-	value int
-	isImm bool
-	bits  [4]bool
+	isReg  bool
+	value  int
+	isImm  bool
+	bits   [4]bool
+	isHalt bool
 }
 
 func parseArg(arg string, allowValue bool, pipelineMode bool, labels map[string][4]bool) (parsedArg, error) {
+	if arg == "hlt" {
+		return parsedArg{
+			isReg: false,
+			isImm: false,
+			value: -1,
+			bits:  [4]bool{false, false, false, false},
+		}, nil
+	}
 	if strings.HasPrefix(arg, "r") {
 		reg, err := strconv.Atoi(arg[1:])
 		if err != nil {
@@ -694,7 +703,6 @@ func parseArg(arg string, allowValue bool, pipelineMode bool, labels map[string]
 		}
 		return parsedArg{isReg: true, value: reg}, nil
 	}
-
 	if !pipelineMode && strings.HasPrefix(arg, "@") {
 		label := arg[1:]
 		if addr, ok := labels[label]; ok {
@@ -702,9 +710,7 @@ func parseArg(arg string, allowValue bool, pipelineMode bool, labels map[string]
 		}
 		return parsedArg{}, fmt.Errorf("неизвестная метка: %s", label)
 	}
-
 	if pipelineMode {
-
 		if allowValue && len(arg) == 4 {
 			var bits [4]bool
 			valid := true
@@ -721,7 +727,6 @@ func parseArg(arg string, allowValue bool, pipelineMode bool, labels map[string]
 		}
 		return parsedArg{}, fmt.Errorf("неверный аргумент: %s (в pipeline режиме используйте r0-r3 или 4-битные двоичные значения)", arg)
 	}
-
 	if allowValue {
 		if len(arg) == 4 {
 			var bits [4]bool
@@ -737,7 +742,6 @@ func parseArg(arg string, allowValue bool, pipelineMode bool, labels map[string]
 				return parsedArg{isReg: false, bits: bits}, nil
 			}
 		}
-
 		if num, err := strconv.ParseInt(arg, 10, 16); err == nil {
 			if num < 0 || num > 15 {
 				return parsedArg{}, fmt.Errorf("число должно быть от 0 до 15")
@@ -748,7 +752,6 @@ func parseArg(arg string, allowValue bool, pipelineMode bool, labels map[string]
 			}
 			return parsedArg{isReg: false, bits: bits}, nil
 		}
-
 		if strings.HasPrefix(arg, "0x") {
 			if num, err := strconv.ParseInt(arg[2:], 16, 16); err == nil && num >= 0 && num < 16 {
 				var bits [4]bool
@@ -759,8 +762,7 @@ func parseArg(arg string, allowValue bool, pipelineMode bool, labels map[string]
 			}
 		}
 	}
-
-	return parsedArg{}, fmt.Errorf("неверный аргумент: %s (допустимые форматы: r0-r3, 0-15, 0b0101, 0x0F, @label)", arg)
+	return parsedArg{}, fmt.Errorf("неверный аргумент: %s (допустимые форматы: r0-r3, 0-15, 0b0101, 0x0F, @label, hlt)", arg)
 }
 func (cpu *CPUContext) executeInstruction(instr Instruction) error {
 	switch instr.OpCode {
