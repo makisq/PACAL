@@ -832,6 +832,10 @@ func (cpu *CPUContext) executeInstruction(instr Instruction) error {
 		return nil
 	case OpHalt:
 		cpu.running = false
+		if cpu.logger != nil {
+			cpu.logger.Println("CPU остановлен по команде HLT")
+		}
+		cpu.pipeline = Pipeline{}
 		return nil
 
 	default:
@@ -1146,8 +1150,7 @@ func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
 			return instr, fmt.Errorf("команда HLT не принимает аргументов (получено %d)", len(args))
 		}
 
-		// Для совместимости с pipeline-режимом
-		instr.Reg1 = -1 // Помечаем как отсутствующий
+		instr.Reg1 = -1
 		instr.Reg2 = -1
 		instr.Imm = [4]bool{false, false, false, false}
 
