@@ -19,7 +19,11 @@ func DecodeInstruction(instr [4]bool) Instruction {
 
 	decoded := Instruction{OpCode: op}
 
-	if op >= 0b1000 {
+	if op == OpHalt {
+		return decoded
+	}
+
+	if op >= 0b1000 && op != OpHalt {
 		decoded.Reg1 = boolToInt(instr[2])
 		decoded.Reg2 = boolToInt(instr[3])
 	} else {
