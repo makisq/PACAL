@@ -35,6 +35,7 @@ const (
 	OpIRET
 	OpEI
 	OpDI
+	OpCode = iota
 )
 
 var mus sync.RWMutex
@@ -494,6 +495,7 @@ func InitializeCPU() *CPUContext {
 		stopChan: stopChan,
 		clock:    clockChan,
 		running:  true,
+		labels:   make(map[string][4]bool),
 	}
 
 	for i := 0; i < 4; i++ {
@@ -551,8 +553,11 @@ func (cpu *CPUContext) executeCommand(line string) error {
 			return nil
 		}
 
-		if strings.HasSuffix(parts[0], ":") {
-			label := strings.TrimSuffix(parts[0], ":")
+		if strings.HasSuffix(line, ":") {
+			if cpu.labels == nil {
+				cpu.labels = make(map[string][4]bool)
+			}
+			label := strings.TrimSuffix(line, ":")
 			addr := cpu.pc.Read()
 			cpu.labels[label] = addr
 			return nil
@@ -566,9 +571,9 @@ func (cpu *CPUContext) executeCommand(line string) error {
 		if err != nil {
 			return err
 		}
-		return cpu.adaptToTextExecutor(instr)
+		tmpCmd := &Command{OpCode: instr.OpCode}
+		return cpu.adaptToInstructionExecutor(tmpCmd.String(), parts[1:])
 	} else {
-		// Shell-режим
 		return cpu.shellExecuteCommand(line)
 	}
 }
@@ -984,6 +989,29 @@ func intTo4Bits(n int) [4]bool {
 		n&1 == 1,
 	}
 
+}
+func (c *Command) String() string {
+	opCodeNames := [...]string{
+		"add",
+		"sub",
+		"mov",
+		"mul",
+		"and",
+		"or",
+		"xor",
+		"cmp",
+		"load",
+		"store",
+		"jmp",
+		"jz",
+		"jnz",
+		"jc",
+	}
+	if c.OpCode < 0 || c.OpCode >= len(opCodeNames) {
+		return fmt.Sprintf("unknown_opcode_%d", c.OpCode)
+	}
+
+	return opCodeNames[c.OpCode]
 }
 
 func decodeInstruction(instr [4]bool) (op int, reg1 int, reg2 int) {
