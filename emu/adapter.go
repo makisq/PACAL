@@ -99,6 +99,13 @@ func (cpu *CPUContext) adaptToTextExecutor(instr Instruction) error {
 		} else {
 			args = []string{fmt.Sprintf("r%d", instr.Reg1)}
 		}
+	case OpHalt:
+		cmd = "hlt"
+		args = nil
+		instr.Reg1 = -1
+		instr.Reg2 = -1
+		instr.Imm = [4]bool{false, false, false, false}
+		instr.Label = ""
 	default:
 		return fmt.Errorf("unknown opcode: %d", instr.OpCode)
 	}
