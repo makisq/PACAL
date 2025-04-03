@@ -5,8 +5,10 @@ import (
 	"log"
 	"math/rand"
 	"os"
-
 	"os/signal"
+	"strconv"
+	"strings"
+	"sync"
 
 	"syscall"
 
@@ -17,6 +19,7 @@ const (
 	OpAdd = iota
 	OpSub
 	OpMul
+	OpHalt = iota + 18
 	OpAnd
 	OpOr
 	OpXor
@@ -34,16 +37,8 @@ const (
 	OpDI
 )
 
-type ALU struct {
-	op    int
-	aBits []bool
-	bBits []bool
-	flags struct {
-		carry bool
-		zero  bool
-	}
-	interrupts InterruptState
-}
+var mus sync.RWMutex
+var pcCounter uint32
 
 type DFlipFlop struct {
 	data bool
@@ -56,13 +51,19 @@ type DFlipFlop struct {
 }
 
 type Register4bit struct {
-	triggers [4]DFlipFlop
-	we       bool
-	floating bool
+	triggers     [4]DFlipFlop
+	we           bool
+	floating     bool
+	dirty        [4]bool
+	cacheEnabled bool
 }
 
 type RegisterFile struct {
 	registers [4]Register4bit
+	cache     [4][4]bool
+	dirty     [4]bool
+	//mu           sync.RWMutex
+	cacheEnabled bool
 }
 
 type PipelineStage struct {
@@ -104,29 +105,72 @@ type InterruptState struct {
 type CPUContext struct {
 	bus      *MemoryBus
 	regFile  *RegisterFile
-	alu      *ALU
-	pc       *PCRegister
-	pipeline Pipeline
-	stopChan chan os.Signal
-	clock    chan bool
-	running  bool
-	logger   *log.Logger
+	terminal *Terminal
+	//mu       sync.Mutex
+	labels        map[string][4]bool
+	program       []string
+	alu           *ALU
+	pc            *PCRegister
+	pipeline      Pipeline
+	pcLine        int
+	interfaceMode int // 0 = Shell, 1 = Pipeline
+	stopChan      chan os.Signal
+	clock         chan bool
+	running       bool
+	logger        *log.Logger
+	com           *Command
+}
+
+func (ctx *CPUContext) DumpState() {
+	fmt.Println("=== CPU State Dump ===")
+	fmt.Printf("PC: %v\n", ctx.pc.Read())
+	fmt.Println("Registers:")
+	for i := 0; i < 4; i++ {
+		fmt.Printf("R%d: %v\n", i, ctx.regFile.Read(i))
+	}
+	fmt.Println("=====================")
 }
 
 func (p *Pipeline) Tick(bus *MemoryBus, pc *PCRegister, alu *ALU) {
-	if !alu.interrupts.inHandler {
-		if irqNum := alu.CheckInterrupts(); irqNum >= 0 {
-			alu.HandleInterrupt(pc, irqNum)
-			p.fetchStage = [4]bool{false, false, false, false}
-			p.decodeStage = PipelineStage{}
-			p.executeStage = PipelineStage{}
-			return
+	if !alu.interrupts.inHandler && alu.CheckInterrupts() >= 0 {
+		return
+	}
+
+	if p.fetchStage != [4]bool{false, false, false, false} {
+		PipelineStages("FETCH", p.fetchStage)
+	}
+
+	if p.executeStage.done {
+		PipelineStages("EXECUTE_DONE", p.executeStage)
+		p.executeStage = PipelineStage{}
+	}
+
+	if p.decodeStage.valid {
+		PipelineStages("DECODE_TO_EXECUTE", p.decodeStage)
+		p.executeStage = p.decodeStage
+		p.executeStage.done = true
+		p.decodeStage = PipelineStage{}
+	}
+
+	if p.fetchStage != [4]bool{false, false, false, false} {
+		op, reg1, reg2 := decodeInstruction(p.fetchStage)
+		newStage := PipelineStage{
+			valid:    true,
+			op:       op,
+			reg1:     reg1,
+			reg2:     reg2,
+			rawInstr: p.fetchStage,
 		}
+		PipelineStages("FETCH_TO_DECODE", newStage)
+		p.decodeStage = newStage
 	}
 
 	pcValue := pc.Read()
 	if pcInt := bitsToInt(pcValue); pcInt < 16 {
-		p.fetchStage = bus.Read(pcValue)
+		newFetch := bus.Read(pcValue)
+		if newFetch != p.fetchStage {
+			p.fetchStage = newFetch
+		}
 	} else {
 		p.fetchStage = [4]bool{false, false, false, false}
 	}
@@ -173,6 +217,28 @@ func (r *Register4bit) Write(data [4]bool, clock bool, reset bool) {
 		r.triggers[i].clock = clock
 		r.triggers[i].reset = reset
 		r.triggers[i].Update()
+	}
+}
+
+func (cpu *CPUContext) ExecuteTextCommand(cmd string, args []string) error {
+	instr, err := convertTextToInstruction(cmd, args)
+	if err != nil {
+		return err
+	}
+
+	switch instr.OpCode {
+	case OpMov:
+		return cpu.executeMov(instr)
+	case OpAdd, OpSub, OpMul, OpAnd, OpOr, OpXor, OpCmp:
+		return cpu.executeALUOp(instr)
+	case OpJmp, OpJz, OpJnz, OpJc:
+		return cpu.executeJump(instr)
+	case OpLoad:
+		return cpu.executeLoad(instr)
+	case OpStore:
+		return cpu.executeStore(instr)
+	default:
+		return fmt.Errorf("unknown command: %s", cmd)
 	}
 }
 
@@ -227,7 +293,7 @@ func (cpu *CPUContext) Reset() {
 	for i := 0; i < 4; i++ {
 		reg := cpu.regFile.registers[i]
 		reg.floating = true
-		time.AfterFunc(100*time.Millisecond, func() {
+		time.AfterFunc(1*time.Millisecond, func() {
 			reg.floating = false
 		})
 	}
@@ -249,219 +315,45 @@ func (d *DFlipFlop) Update() {
 func NewALU() *ALU {
 
 	return &ALU{
-
 		aBits: make([]bool, 4),
-
 		bBits: make([]bool, 4),
+		flags: struct {
+			carry bool
+			zero  bool
+		}{false, false},
 	}
 
 }
 
-func boolSliceTo4Bits(bits []bool) [4]bool {
+var cmpCache struct {
+	a      [4]bool
+	b      [4]bool
+	result struct {
+		carry bool
+		zero  bool
+	}
+	timestamp time.Time
+}
+
+func sliceTo4Bool(s []bool) [4]bool {
 	var result [4]bool
-	for i := 0; i < 4 && i < len(bits); i++ {
-		result[i] = bits[i]
+	for i := 0; i < 4 && i < len(s); i++ {
+		result[i] = s[i]
 	}
 	return result
 }
 
-func byteToBool(b []byte) []bool {
-
-	res := make([]bool, len(b))
-
-	for i := range b {
-
-		res[i] = b[i] != 0
-
+func BatchCompare(alu *ALU, pairs [][2][4]bool) {
+	for i, pair := range pairs {
+		alu.aBits = arrayToBoolSlice(pair[0])
+		alu.bBits = arrayToBoolSlice(pair[1])
+		alu.compare()
+		showProgress(len(pairs), i+1)
 	}
-
-	return res
-
 }
 
-func (a *ALU) subtract() ([]byte, []byte) {
-	invertedB := make([]bool, 4)
-	for i := 0; i < 4; i++ {
-		invertedB[i] = !a.bBits[i]
-	}
-
-	carry := true
-	bTwosComplement := make([]bool, 4)
-	for i := 0; i < 4; i++ {
-		sum, newCarry := summator1(invertedB[i], false, carry)
-		bTwosComplement[i] = sum == 1
-		carry = newCarry == 1
-	}
-
-	result := make([]byte, 4)
-	carry = false
-	var overflow bool
-	for i := 0; i < 4; i++ {
-		sum, newCarry := summator1(a.aBits[i], bTwosComplement[i], carry)
-		result[i] = sum
-		carry = newCarry == 1
-	}
-	overflow = carry
-
-	a.flags.carry = !overflow
-	a.flags.zero = true
-	for _, b := range result {
-		if b != 0 {
-			a.flags.zero = false
-			break
-		}
-	}
-
-	return result, nil
-}
-
-func (a *ALU) compare() ([]byte, []byte) {
-	a.subtract()
-	return nil, nil
-}
-
-func (a *ALU) Execute() ([]byte, []byte) {
-
-	switch a.op {
-
-	case OpAdd:
-
-		return a.add()
-
-	case OpMul:
-
-		return a.multiply()
-
-	case OpAnd:
-
-		return a.and()
-
-	case OpOr:
-
-		return a.or()
-
-	case OpXor:
-
-		return a.xor()
-
-	case OpSub:
-
-		return a.subtract()
-
-	case OpCmp:
-
-		return a.compare()
-
-	default:
-
-		return nil, nil
-
-	}
-
-}
-
-func (a *ALU) and() ([]byte, []byte) {
-	result := make([]byte, 4)
-	for i := 0; i < 4; i++ {
-		result[i] = boolToByte(a.aBits[i] && a.bBits[i])
-	}
-
-	a.flags.zero = true
-	for _, b := range result {
-		if b != 0 {
-			a.flags.zero = false
-			break
-		}
-	}
-	a.flags.carry = false
-
-	return result, nil
-}
-
-func (a *ALU) or() ([]byte, []byte) {
-	result := make([]byte, 4)
-	for i := 0; i < 4; i++ {
-		result[i] = boolToByte(a.aBits[i] || a.bBits[i])
-	}
-
-	a.flags.zero = true
-	for _, b := range result {
-		if b != 0 {
-			a.flags.zero = false
-			break
-		}
-	}
-	a.flags.carry = false
-
-	return result, nil
-}
-
-func (a *ALU) xor() ([]byte, []byte) {
-	result := make([]byte, 4)
-	for i := 0; i < 4; i++ {
-		result[i] = boolToByte(a.aBits[i] != a.bBits[i])
-	}
-	a.flags.zero = true
-	for _, b := range result {
-		if b != 0 {
-			a.flags.zero = false
-			break
-		}
-	}
-	a.flags.carry = false
-
-	return result, nil
-}
-
-func (a *ALU) add() ([]byte, []byte) {
-	result := make([]byte, 4)
-	carry := false
-
-	for i := 0; i < 4; i++ {
-		sum, newCarry := summator1(a.aBits[i], a.bBits[i], carry)
-		result[i] = sum
-		carry = newCarry == 1
-	}
-
-	a.flags.carry = carry
-	a.flags.zero = (result[0] == 0 && result[1] == 0 && result[2] == 0 && result[3] == 0)
-
-	return result, []byte{boolToByte(carry)}
-}
-
-func (a *ALU) multiply() ([]byte, []byte) {
-
-	aVal := 0
-	bVal := 0
-	for i := 0; i < 4; i++ {
-		if a.aBits[i] {
-			aVal |= 1 << i
-		}
-		if a.bBits[i] {
-			bVal |= 1 << i
-		}
-	}
-
-	res := aVal * bVal
-
-	result := make([]byte, 4)
-	for i := 0; i < 4; i++ {
-		if res&(1<<i) != 0 {
-			result[i] = 1
-		}
-	}
-
-	a.flags.carry = res > 15
-	a.flags.zero = res == 0
-
-	carries := make([]byte, 4)
-	for i := 0; i < 4; i++ {
-		if res&(1<<(i+4)) != 0 {
-			carries[i] = 1
-		}
-	}
-
-	return result, carries
+func arrayToBoolSlice(arr [4]bool) []bool {
+	return []bool{arr[0], arr[1], arr[2], arr[3]}
 }
 
 func boolToInt(b bool) int {
@@ -476,12 +368,29 @@ func boolToInt(b bool) int {
 
 }
 
+func (r *RegisterFile) Write(regNum int, data []byte) {
+	//r.mu.Lock()
+	//defer r.mu.Unlock()
+
+	if regNum < 0 || regNum > 3 {
+		return
+	}
+	var dataBits [4]bool
+	for i := 0; i < 4 && i < len(data); i++ {
+		dataBits[i] = data[i] != 0
+	}
+	r.registers[regNum].Write(dataBits, true, false)
+	r.dirty[regNum] = true
+}
+
 func NewRegisterFile() *RegisterFile {
 	rf := &RegisterFile{}
 	for i := range rf.registers {
 		rf.registers[i] = Register4bit{
-			triggers: [4]DFlipFlop{},
-			we:       true,
+			triggers:     [4]DFlipFlop{},
+			we:           true,
+			cacheEnabled: true,
+			dirty:        [4]bool{true, true, true, true},
 		}
 	}
 	return rf
@@ -489,9 +398,11 @@ func NewRegisterFile() *RegisterFile {
 
 type PCRegister struct {
 	triggers [4]DFlipFlop
+	//mu       sync.Mutex
 }
 
 func (p *PCRegister) Read() [4]bool {
+
 	var value [4]bool
 	for i := 0; i < 4; i++ {
 		value[i] = p.triggers[i].out
@@ -514,23 +425,31 @@ func NewPCRegister() *PCRegister {
 }
 
 func (r *RegisterFile) Read(regNum int) []bool {
+	//r.mu.RLock()
+	//defer r.mu.RUnlock()
+
 	if regNum < 0 || regNum > 3 {
 		return make([]bool, 4)
 	}
-	reg := r.registers[regNum].Read()
-	return reg[:]
-}
-func (r *RegisterFile) Write(regNum int, data []byte) {
-	if regNum < 0 || regNum > 3 {
-		return
+
+	if r.cacheEnabled && !r.dirty[regNum] {
+		return r.cache[regNum][:]
 	}
-	var dataBits [4]bool
-	for i := 0; i < 4 && i < len(data); i++ {
-		dataBits[i] = data[i] != 0
+
+	val := r.registers[regNum].Read()
+
+	if r.cacheEnabled {
+		r.cache[regNum] = val
+		r.dirty[regNum] = false
 	}
-	r.registers[regNum].Write(dataBits, true, false)
+
+	return val[:]
 }
+
 func (p *PCRegister) Increment() {
+	//p.mu.Lock()
+	//defer p.mu.Unlock()
+
 	current := p.Read()
 	carry := true
 	var newValue [4]bool
@@ -548,31 +467,22 @@ func NewMemory16x4() *Memory16x4 {
 
 }
 
-func boolSliceToBytes(bits []bool) []byte {
-
-	result := make([]byte, len(bits))
-
-	for i, b := range bits {
-
-		result[i] = boolToByte(b)
-
-	}
-
-	return result
-
-}
-
 func InitializeCPU() *CPUContext {
-	rand.Seed(time.Now().UnixNano())
 
-	rom := NewROM16x4([16][4]bool{})
-	ram := &RAM16x4{}
+	stopChan := make(chan os.Signal, 1)
+	clockChan := make(chan bool, 1)
+	signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)
+
 	terminal := &Terminal{
 		ScreenBuffer: [80 * 25]byte{},
 		CursorPos:    0,
 		KeyBuffer:    []byte{},
+		InputMode:    true,
+		Echo:         true,
 	}
 
+	rom := NewROM16x4([16][4]bool{})
+	ram := &RAM16x4{}
 	bus := NewMemoryBus(rom, ram, terminal, 16, 16)
 
 	ctx := &CPUContext{
@@ -580,9 +490,9 @@ func InitializeCPU() *CPUContext {
 		regFile:  NewRegisterFile(),
 		alu:      NewALU(),
 		pc:       NewPCRegister(),
-		pipeline: Pipeline{},
-		stopChan: make(chan os.Signal, 1),
-		clock:    make(chan bool),
+		terminal: terminal,
+		stopChan: stopChan,
+		clock:    clockChan,
 		running:  true,
 	}
 
@@ -606,7 +516,7 @@ func InitializeCPU() *CPUContext {
 	ctx.initLogger()
 	signal.Notify(ctx.stopChan, syscall.SIGINT, syscall.SIGTERM)
 	loadProgram(bus)
-	go ctx.clockGenerator(1 * time.Second)
+	go ctx.clockGenerator(10 * time.Millisecond)
 
 	ctx.logger.Println("CPU инициализирован")
 	for i := 0; i < 4; i++ {
@@ -630,13 +540,227 @@ func (ctx *CPUContext) clockGenerator(interval time.Duration) {
 	}
 }
 
-func (ctx *CPUContext) Run() {
-	for ctx.running {
+func (cpu *CPUContext) executeCommand(line string) error {
+	if strings.Contains(line, ":") || strings.HasPrefix(line, ";") {
+		cpu.interfaceMode = 1
+	}
+
+	if cpu.interfaceMode == 1 {
+		parts := strings.Fields(line)
+		if len(parts) == 0 {
+			return nil
+		}
+
+		if strings.HasSuffix(parts[0], ":") {
+			label := strings.TrimSuffix(parts[0], ":")
+			addr := cpu.pc.Read()
+			cpu.labels[label] = addr
+			return nil
+		}
+
+		if strings.HasPrefix(parts[0], ";") {
+			return nil
+		}
+
+		instr, err := convertToInstruction(parts)
+		if err != nil {
+			return err
+		}
+		return cpu.adaptToTextExecutor(instr)
+	} else {
+		// Shell-режим
+		return cpu.shellExecuteCommand(line)
+	}
+}
+
+func convertToInstruction(parts []string) (Instruction, error) {
+	var instr Instruction
+
+	if len(parts) == 0 {
+		return instr, fmt.Errorf("недостаточно аргументов")
+	}
+
+	switch {
+	case strings.HasPrefix(parts[0], "r"):
+		reg, err := parseRegister(parts[0][1:])
+		if err != nil {
+			return instr, err
+		}
+		instr.Reg1 = reg
+	case strings.HasPrefix(parts[0], "["):
+		regStr := strings.Trim(parts[0], "[]")
+		if strings.HasPrefix(regStr, "r") {
+			reg, err := parseRegister(regStr[1:])
+			if err != nil {
+				return instr, err
+			}
+			instr.Reg2 = reg
+		}
+	default:
+		instr.Label = parts[0]
+	}
+
+	if len(parts) > 1 {
+		switch {
+		case strings.HasPrefix(parts[1], "r"):
+			reg, err := parseRegister(parts[1][1:])
+			if err != nil {
+				return instr, err
+			}
+			instr.Reg2 = reg
+		case strings.HasPrefix(parts[1], "["):
+			regStr := strings.Trim(parts[1], "[]")
+			if strings.HasPrefix(regStr, "r") {
+				reg, err := parseRegister(regStr[1:])
+				if err != nil {
+					return instr, err
+				}
+				instr.Reg1 = reg
+			}
+		default:
+			if num, err := strconv.Atoi(parts[1]); err == nil {
+				for i := 0; i < 4 && i < len(instr.Imm); i++ {
+					instr.Imm[i] = (num>>i)&1 == 1
+				}
+			} else {
+				instr.Label = parts[1]
+			}
+		}
+	}
+
+	return instr, nil
+}
+
+func (cpu *CPUContext) executeInstruction(instr Instruction) error {
+	switch instr.OpCode {
+	case OpMov:
+		return cpu.executeMovInstr(instr)
+	case OpAdd:
+		return cpu.executeALUOp(instr)
+	// ... остальные команды
+	default:
+		return fmt.Errorf("неизвестный код операции: %d", instr.OpCode)
+	}
+}
+
+func (cpu *CPUContext) executeMovInstr(instr Instruction) error {
+	var value [4]bool
+	if instr.Reg2 >= 0 {
+		val := cpu.regFile.Read(instr.Reg2)
+		value = boolSliceTo4Bits(val)
+	} else {
+		value = instr.Imm
+	}
+	cpu.regFile.Write(instr.Reg1, boolToByteSlice(value[:]))
+	return nil
+}
+
+func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
+	var instr Instruction
+	switch cmd {
+	case "mov":
+		instr.OpCode = OpMov
+	case "add":
+		instr.OpCode = OpAdd
+	case "sub":
+		instr.OpCode = OpSub
+	case "mul":
+		instr.OpCode = OpMul
+	case "and":
+		instr.OpCode = OpAnd
+	case "or":
+		instr.OpCode = OpOr
+	case "xor":
+		instr.OpCode = OpXor
+	case "cmp":
+		instr.OpCode = OpCmp
+	case "load":
+		instr.OpCode = OpLoad
+	case "store":
+		instr.OpCode = OpStore
+	case "jmp":
+		instr.OpCode = OpJmp
+	case "jz":
+		instr.OpCode = OpJz
+	case "jnz":
+		instr.OpCode = OpJnz
+	case "jc":
+		instr.OpCode = OpJc
+	default:
+		return instr, fmt.Errorf("неизвестная команда: %s", cmd)
+	}
+	switch instr.OpCode {
+	case OpMov, OpAdd, OpSub, OpMul, OpAnd, OpOr, OpXor, OpCmp:
+		if len(args) < 2 {
+			return instr, fmt.Errorf("недостаточно аргументов")
+		}
+		reg1, err := parseRegister(args[0])
+		if err != nil {
+			return instr, err
+		}
+		reg2, err := parseRegister(args[1])
+		if err != nil {
+			return instr, err
+		}
+		instr.Reg1 = reg1
+		instr.Reg2 = reg2
+
+	case OpLoad, OpStore:
+		if len(args) < 2 {
+			return instr, fmt.Errorf("недостаточно аргументов")
+		}
+		reg, err := parseRegister(args[0])
+		if err != nil {
+			return instr, err
+		}
+		addr, err := parseAddress(args[1])
+		if err != nil {
+			return instr, err
+		}
+		instr.Reg1 = reg
+		instr.Reg2 = addr
+
+	case OpJmp, OpJz, OpJnz, OpJc:
+		if len(args) < 1 {
+			return instr, fmt.Errorf("недостаточно аргументов")
+		}
+		if strings.HasPrefix(args[0], "r") {
+			reg, err := parseRegister(args[0][1:])
+			if err != nil {
+				return instr, err
+			}
+			instr.Reg1 = reg
+		} else {
+			instr.Label = args[0]
+		}
+	}
+
+	return instr, nil
+}
+func (cpu *CPUContext) Run() {
+	cpu.pcLine = 0
+	for cpu.running && cpu.pcLine < len(cpu.program) {
+		line := strings.TrimSpace(cpu.program[cpu.pcLine])
+		if line == "" || strings.HasPrefix(line, ";") {
+			cpu.pcLine++
+			continue
+		}
+		if strings.HasSuffix(line, ":") {
+			cpu.pcLine++
+			continue
+		}
+		err := cpu.executeCommand(line)
+		if err != nil {
+			log.Printf("Ошибка в строке %d: %v", cpu.pcLine, err)
+			cpu.handleStop()
+			return
+		}
+		cpu.pcLine++
 		select {
-		case <-ctx.stopChan:
-			ctx.handleStop()
-		case <-ctx.clock:
-			ctx.handleClockTick()
+		case <-cpu.clock:
+			continue
+		default:
+			time.Sleep(1 * time.Millisecond)
 		}
 	}
 }
@@ -647,28 +771,16 @@ func (ctx *CPUContext) handleStop() {
 }
 
 func (ctx *CPUContext) handleClockTick() {
-	ctx.pipeline.Tick(ctx.bus, ctx.pc, ctx.alu)
-	ctx.handleDataHazards()
-	ctx.handlePCIncrement()
-
+	//ctx.mu.Lock()
+	//defer ctx.mu.Unlock()
+	if !ctx.running {
+		return
+	}
 	if ctx.pipeline.executeStage.done {
 		ctx.executeCurrentInstruction()
+		ctx.pipeline.executeStage.done = false
 	}
-}
-
-func (ctx *CPUContext) handleDataHazards() {
-	if ctx.pipeline.decodeStage.valid && ctx.pipeline.executeStage.valid {
-		if ctx.pipeline.decodeStage.reg1 == ctx.pipeline.executeStage.reg1 ||
-			ctx.pipeline.decodeStage.reg2 == ctx.pipeline.executeStage.reg1 {
-			ctx.pipeline.decodeStage = PipelineStage{
-				valid:    false,
-				rawInstr: [4]bool{false, false, false, false},
-			}
-		}
-	}
-}
-
-func (ctx *CPUContext) handlePCIncrement() {
+	ctx.pipeline.Tick(ctx.bus, ctx.pc, ctx.alu)
 	if !ctx.alu.interrupts.inHandler &&
 		ctx.pipeline.executeStage.op != OpJmp &&
 		ctx.pipeline.executeStage.op != OpJz &&
@@ -678,24 +790,36 @@ func (ctx *CPUContext) handlePCIncrement() {
 	}
 }
 
-func (ctx *CPUContext) executeCurrentInstruction() {
-	jumpTaken := false
-	var nextPC [4]bool
+func (cpu *CPUContext) SwitchInterfaceMode() {
+	cpu.interfaceMode = 1 - cpu.interfaceMode
+	fmt.Printf("\nРежим переключен на: %s\n",
+		map[int]string{0: "Shell", 1: "Pipeline"}[cpu.interfaceMode])
+}
 
-	switch ctx.pipeline.executeStage.op {
-	case OpAdd, OpSub, OpMul, OpAnd, OpOr, OpXor, OpMov, OpCmp:
-		execute(ctx.bus, ctx.regFile, ctx.alu, ctx.pc, ctx.pipeline.executeStage.value)
-	case OpLoad:
-		ctx.handleLoad()
-	case OpStore:
-		ctx.handleStore()
-	case OpJmp, OpJz, OpJnz, OpJc:
-		jumpTaken, nextPC = ctx.handleJump()
-	}
-
-	if jumpTaken {
-		ctx.handleJumpTaken(nextPC)
-	}
+func (cpu *CPUContext) executeCurrentInstruction() error {
+	instr := cpu.pipeline.executeStage.rawInstr
+	decoded := DecodeInstruction(instr)
+	// switch decoded.OpCode {
+	// case OpAdd, OpSub, OpMul, OpAnd, OpOr, OpXor, OpCmp:
+	// 	return cpu.executeALUOp(decoded)
+	// case OpLoad:
+	// 	return cpu.executeLoad(decoded)
+	// case OpStore:
+	// 	return cpu.executeStore(decoded)
+	// case OpMov:
+	// 	return cpu.executeMov(decoded)
+	// case OpJmp:
+	// 	return cpu.executeJump(decoded)
+	// case OpJz:
+	// 	return cpu.executeJz(decoded)
+	// case OpJnz:
+	// 	return cpu.executeJnz(decoded)
+	// case OpJc:
+	// 	return cpu.executeJc(decoded)
+	// default:
+	// 	return fmt.Errorf("unknown opcode: %d", decoded.OpCode)
+	// }
+	return cpu.adaptToTextExecutor(decoded)
 }
 func (ctx *CPUContext) handleLoad() {
 	addr := ctx.regFile.Read(ctx.pipeline.executeStage.reg2)
@@ -717,37 +841,38 @@ func (ctx *CPUContext) handleStore() {
 	ctx.bus.Write([4]bool(addr[:4]), [4]bool(data[:4]), true)
 }
 
-func (ctx *CPUContext) handleJump() (bool, [4]bool) {
-	var jumpTaken bool
-	var nextPC [4]bool
-
-	switch {
-	case ctx.pipeline.executeStage.op == OpJmp:
-		jumpTaken = true
-	case ctx.pipeline.executeStage.op == OpJz && ctx.alu.flags.zero:
-		jumpTaken = true
-	case ctx.pipeline.executeStage.op == OpJnz && !ctx.alu.flags.zero:
-		jumpTaken = true
-	case ctx.pipeline.executeStage.op == OpJc && ctx.alu.flags.carry:
-		jumpTaken = true
-	}
-
-	if jumpTaken {
-		newPC := ctx.regFile.Read(ctx.pipeline.executeStage.reg1)
-		nextPC = [4]bool(newPC[:4])
-	}
-
-	return jumpTaken, nextPC
-}
-
-func (ctx *CPUContext) handleJumpTaken(nextPC [4]bool) {
-	ctx.pc.Write(nextPC)
-	ctx.pipeline = Pipeline{}
-	ctx.logger.Println("Прыжок выполнен, новый PC:", bitsToStr(nextPC[:]))
-}
-
 func (ctx *CPUContext) Cleanup() {
 	ctx.logger.Println("Завершение работы")
+}
+
+func (cpu *CPUContext) LoadProgram(code string) error {
+	cpu.program = strings.Split(code, "\n")
+	cpu.labels = make(map[string][4]bool)
+
+	currentAddr := [4]bool{false, false, false, false}
+	for _, line := range cpu.program {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasSuffix(line, ":") {
+			label := strings.TrimSuffix(line, ":")
+			cpu.labels[label] = currentAddr
+			continue
+		}
+		currentAddr = increment4Bit(currentAddr)
+	}
+	return nil
+}
+
+func increment4Bit(addr [4]bool) [4]bool {
+	carry := true
+	for i := 0; i < 4; i++ {
+		newBit := addr[i] != carry
+		carry = addr[i] && carry
+		addr[i] = newBit
+	}
+	return addr
 }
 
 func loadProgram(bus *MemoryBus) {
@@ -779,6 +904,8 @@ func loadProgram(bus *MemoryBus) {
 
 	for _, prog := range program {
 		bus.Write(prog.addr, prog.data, true)
+		log.Printf("Loaded instruction %v at address %v",
+			bitsToStr(prog.data), bitsToStr(prog.addr))
 	}
 }
 
@@ -831,24 +958,6 @@ func boolToByte(b bool) byte {
 
 }
 
-func byteSliceTo4Bits(data []byte) [4]bool {
-	var res [4]bool
-	for i := 0; i < 4 && i < len(data); i++ {
-		res[i] = data[i] != 0
-	}
-	return res
-}
-
-func bool4ToByteSlice(bits [4]bool) []byte {
-	res := make([]byte, 4)
-	for i := 0; i < 4; i++ {
-		if bits[i] {
-			res[i] = 1
-		}
-	}
-	return res
-}
-
 func bitsToStr(bits interface{}) string {
 	var s string
 	switch v := bits.(type) {
@@ -874,139 +983,18 @@ func bitsToStr(bits interface{}) string {
 	return s
 }
 
-func summator1(a, b, p bool) (byte, byte) {
-
-	S := (a != b) != p
-
-	P := (a && b) || (p && (a != b))
-
-	p1 := map[bool]byte{false: 0, true: 1}[P]
-
-	s1 := map[bool]byte{false: 0, true: 1}[S]
-
-	return p1, s1
-
-}
-
-func binaryIncrement(bits [4]bool) [4]bool {
-
-	carry := true
-
-	var result [4]bool
-
-	for i := 0; i < 4; i++ {
-
-		sum, newCarry := summator1(bits[i], false, carry)
-
-		result[i] = sum == 1
-
-		carry = newCarry == 1
-
-	}
-
-	return result
-
-}
-
-func execute(bus *MemoryBus, regFile *RegisterFile, alu *ALU, pc *PCRegister, instruction [4]bool) {
-	op, reg1, reg2 := decodeInstruction(instruction)
-
-	switch op {
-	case OpAdd, OpSub, OpMul, OpAnd, OpOr, OpXor:
-		aBits := regFile.Read(reg1)
-		bBits := regFile.Read(reg2)
-
-		alu.aBits = aBits
-		alu.bBits = bBits
-		alu.op = OpAdd
-
-		result, _ := alu.Execute()
-		resultBits := byteSliceTo4Bits(result)
-		regFile.Write(reg1, bool4ToByteSlice(resultBits))
-		fmt.Printf("Result: %v\n", result)
-
-		regFile.Write(reg1, result)
-		fmt.Printf("After ADD: R%d=%v\n", reg1, regFile.Read(reg1))
-	case OpMov:
-		val := regFile.Read(reg2)
-		regFile.Write(reg1, boolSliceToBytes(val))
-
-	case OpLoad:
-		addr := regFile.Read(reg2)
-		addr4 := boolSliceTo4Bits(addr)
-		data := bus.Read(addr4)
-		regFile.Write(reg1, boolToByteSlice(data[:]))
-
-	case OpStore:
-		addr := regFile.Read(reg2)
-		data := regFile.Read(reg1)
-		addr4 := boolSliceTo4Bits(addr)
-		data4 := boolSliceTo4Bits(data)
-		fmt.Printf("Storing %v at address %v\n", data4, addr4)
-		bus.Write(addr4, data4, true)
-
-	case OpJmp:
-		newPC := regFile.Read(reg1)
-		pc.Write(boolSliceTo4Bits(newPC))
-		return
-
-	case OpJz:
-		if alu.flags.zero {
-			newPC := regFile.Read(reg1)
-			pc.Write(boolSliceTo4Bits(newPC))
-			return
-		}
-
-	case OpCmp:
-
-		aBits := regFile.Read(reg1)
-		bBits := regFile.Read(reg2)
-
-		invertedB := make([]bool, 4)
-		for i := range bBits {
-			invertedB[i] = !bBits[i]
-		}
-
-		alu.aBits = invertedB
-		alu.bBits = []bool{true, false, false, false}
-		alu.op = OpAdd
-		bTwosComplement, _ := alu.Execute()
-		alu.aBits = aBits
-		alu.bBits = byteToBool(bTwosComplement)
-		alu.op = OpAdd
-		result, _ := alu.Execute()
-
-		alu.flags.zero = true
-		for _, b := range result {
-			if b != 0 {
-				alu.flags.zero = false
-				break
-			}
-		}
-
-	case OpIRQ:
-		if reg1 >= 0 && reg1 < 4 {
-			alu.interrupts.irqStatus[reg1] = true
-		}
-
-	case OpIRET:
-		alu.ReturnFromInterrupt(pc)
-
-	case OpEI:
-		alu.interrupts.enabled = true
-
-	case OpDI:
-		alu.interrupts.enabled = false
-
-	default:
-		log.Printf("Неизвестная инструкция: %v", instruction)
-		pc.Increment()
-	}
-}
 func boolToByteSlice(bits []bool) []byte {
 	res := make([]byte, len(bits))
 	for i, b := range bits {
 		res[i] = boolToByte(b)
 	}
 	return res
+}
+
+func boolSliceTo4Bits(bits []bool) [4]bool {
+	var result [4]bool
+	for i := 0; i < 4 && i < len(bits); i++ {
+		result[i] = bits[i]
+	}
+	return result
 }
