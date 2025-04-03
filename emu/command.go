@@ -20,6 +20,11 @@ type Command struct {
 
 var commands []Command
 
+func hltCommand(cpu *CPUContext, _ []string) error {
+	cpu.running = false
+	fmt.Println("Процессор остановлен по команде HLT")
+	return nil
+}
 func initCommands() {
 	rawCommands := []Command{
 		{
@@ -155,12 +160,19 @@ func initCommands() {
 				return nil
 			},
 		},
+		{
+			Name:     "hlt",
+			OpCode:   OpHalt,
+			Operands: 0,
+			Help:     "hlt - остановка процессора",
+			Exec:     hltCommand,
+		},
 	}
+
 	for _, cmd := range rawCommands {
 		commands = append(commands, wrapWithSpinner(cmd))
 	}
 }
-
 func genALUCommand(op int) func(cpu *CPUContext, args []string) error {
 	return func(cpu *CPUContext, args []string) error {
 		if len(args) != 2 {
