@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Command struct {
@@ -14,12 +15,13 @@ type Command struct {
 	Operands int
 	Help     string
 	Exec     func(cpu *CPUContext, args []string) error
+	cpu      *CPUContext
 }
 
 var commands []Command
 
 func initCommands() {
-	commands = []Command{
+	rawCommands := []Command{
 		{
 			Name:     "add",
 			OpCode:   OpAdd,
@@ -28,8 +30,9 @@ func initCommands() {
 			Exec:     genALUCommand(OpAdd),
 		},
 		{
-			Name:     "sub",
-			OpCode:   OpSub,
+			Name:   "sub",
+			OpCode: OpSub,
+
 			Operands: 2,
 			Help:     "sub <reg1> <reg2> - вычитание регистров (reg1 = reg1 - reg2)",
 			Exec:     genALUCommand(OpSub),
@@ -144,6 +147,17 @@ func initCommands() {
 			Help:     "help - справка",
 			Exec:     helpCommand,
 		},
+		{
+			Name: "perf",
+			Help: "Показать статистику производительности",
+			Exec: func(cpu *CPUContext, _ []string) error {
+				fmt.Printf("Последняя операция: %v\n", cpu.alu.lastOpTime)
+				return nil
+			},
+		},
+	}
+	for _, cmd := range rawCommands {
+		commands = append(commands, wrapWithSpinner(cmd))
 	}
 }
 
@@ -152,31 +166,38 @@ func genALUCommand(op int) func(cpu *CPUContext, args []string) error {
 		if len(args) != 2 {
 			return fmt.Errorf("требуется 2 аргумента")
 		}
-
-		reg1, err := parseRegister(args[0])
-		if err != nil {
-			return fmt.Errorf("неверный регистр-назначение: %v", err)
+		reg1, err := strconv.Atoi(args[0])
+		if err != nil || reg1 < 0 || reg1 > 3 {
+			return fmt.Errorf("неверный регистр-назначение (0-3)")
 		}
 
-		reg2, err := parseRegister(args[1])
-		if err != nil {
-			return fmt.Errorf("неверный регистр-источник: %v", err)
+		reg2, err := strconv.Atoi(args[1])
+		if err != nil || reg2 < 0 || reg2 > 3 {
+			return fmt.Errorf("неверный регистр-источник (0-3)")
 		}
 
 		val1 := cpu.regFile.Read(reg1)
 		val2 := cpu.regFile.Read(reg2)
 
-		cpu.alu.aBits = val1
-		cpu.alu.bBits = val2
-		cpu.alu.op = op
-
-		result, _ := cpu.alu.Execute()
-
-		var resultBits [4]bool
-		for i := 0; i < 4; i++ {
-			resultBits[i] = result[i] == 1
+		if len(val1) < 4 || len(val2) < 4 {
+			return fmt.Errorf("ошибка чтения регистров")
 		}
-		cpu.regFile.Write(reg1, boolSliceToBytes(resultBits[:]))
+
+		cpu.alu.aBits = make([]bool, 4)
+		cpu.alu.bBits = make([]bool, 4)
+		copy(cpu.alu.aBits, val1[:4])
+		copy(cpu.alu.bBits, val2[:4])
+		cpu.alu.op = op
+		result, flags, err := cpu.alu.Execute()
+		if err != nil {
+			return fmt.Errorf("ошибка выполнения операции: %v", err)
+		}
+
+		if len(result) != 4 {
+			return fmt.Errorf("неверный размер результата")
+		}
+		cpu.regFile.Write(reg1, boolToByteSlice(result[:]))
+		cpu.alu.flags = flags
 
 		return nil
 	}
@@ -260,9 +281,16 @@ func jmpCommand(cpu *CPUContext, args []string) error {
 	if err != nil {
 		return fmt.Errorf("неверный адрес перехода: %v", err)
 	}
+	//cpu.mu.Lock()
+	//defer cpu.mu.Unlock()
+	target := cpu.regFile.Read(addr)
+	if len(target) < 4 {
+		return fmt.Errorf("неверный адрес в регистре R%d", addr)
+	}
+	var newPC [4]bool
+	copy(newPC[:], target[:4])
+	cpu.pc.Write(newPC)
 
-	instr := encodeInstruction(OpJmp, addr, 0)
-	execute(cpu.bus, cpu.regFile, cpu.alu, cpu.pc, instr)
 	return nil
 }
 
@@ -355,10 +383,10 @@ func printCommandHelp(name string) {
 	}
 }
 
-func parseRegister(arg string) (int, error) {
-	reg, err := strconv.Atoi(arg)
+func parseRegister(regStr string) (int, error) {
+	reg, err := strconv.Atoi(regStr)
 	if err != nil || reg < 0 || reg > 3 {
-		return 0, fmt.Errorf("ожидается номер регистра (0-3)")
+		return 0, fmt.Errorf("неверный регистр: %s (должен быть 0-3)", regStr)
 	}
 	return reg, nil
 }
@@ -375,24 +403,29 @@ func parseAddress(arg string) (int, error) {
 	return addr, nil
 }
 
-func encodeInstruction(op, reg1, reg2 int) [4]bool {
-	return [4]bool{
-		(op>>3)&1 == 1,
-		(op>>2)&1 == 1,
-		(op>>1)&1 == 1,
-		op&1 == 1,
-	}
+func showProgress(total, current int) {
+	width := 50
+	percent := float64(current) / float64(total)
+	filled := int(float64(width) * percent)
+
+	fmt.Printf("\r[%-*s] %3.0f%%",
+		width,
+		strings.Repeat("=", filled)+">",
+		percent*100)
 }
 
 func CommandShell(cpu *CPUContext) {
 	initCommands()
+	cpu.terminal.cpu = cpu // Устанавливаем ссылку
 
-	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("Эмулятор процессора. Введите 'help' для списка команд")
+	fmt.Println("Ctrl+Enter для переключения режимов")
 
 	for {
-		fmt.Print("> ")
-		input, _ := reader.ReadString('\n')
+		modePrompt := map[int]string{0: "SHELL> ", 1: "PIPE> "}[cpu.interfaceMode]
+		fmt.Print(modePrompt)
+
+		input, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		input = strings.TrimSpace(input)
 
 		if input == "exit" {
@@ -400,26 +433,110 @@ func CommandShell(cpu *CPUContext) {
 			return
 		}
 
-		parts := strings.Split(input, " ")
-		cmdFound := false
+		if err := cpu.executeCommand(input); err != nil {
+			fmt.Printf("Ошибка: %v\n", err)
+		}
+	}
+}
+func (cpu *CPUContext) pipelineExecuteCommand(line string) error {
+	// Удаляем комментарии
+	if i := strings.Index(line, ";"); i >= 0 {
+		line = line[:i]
+	}
+	line = strings.TrimSpace(line)
 
-		for _, cmd := range commands {
-			if cmd.Name == parts[0] {
-				cmdFound = true
-				if len(parts[1:]) != cmd.Operands {
-					fmt.Printf("Ошибка: команда '%s' требует %d аргументов\n", cmd.Name, cmd.Operands)
-					break
-				}
+	if line == "" {
+		return nil
+	}
 
-				if err := cmd.Exec(cpu, parts[1:]); err != nil {
-					fmt.Printf("Ошибка выполнения: %v\n", err)
-				}
-				break
+	// Обработка меток
+	if strings.HasSuffix(line, ":") {
+		label := strings.TrimSuffix(line, ":")
+		addr := cpu.pc.Read()
+		cpu.labels[label] = addr
+		return nil
+	}
+
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	instr, err := convertToInstruction(parts)
+	if err != nil {
+		return err
+	}
+
+	return executeInstruction(instr)
+}
+
+func (cpu *CPUContext) shellExecuteCommand(line string) error {
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	cmdFound := false
+	for _, cmd := range commands {
+		if cmd.Name == parts[0] {
+			cmdFound = true
+			if len(parts[1:]) != cmd.Operands {
+				return fmt.Errorf("команда '%s' требует %d аргументов", cmd.Name, cmd.Operands)
+			}
+			return cmd.Exec(cpu, parts[1:])
+		}
+	}
+
+	if !cmdFound {
+		return fmt.Errorf("неизвестная команда: %s", parts[0])
+	}
+	return nil
+}
+
+func (cpu *CPUContext) executeWithSpinner(fn func()) {
+	if cpu.terminal == nil {
+		fn()
+		return
+	}
+
+	frames := []rune{'⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'}
+	done := make(chan struct{})
+
+	go func() {
+		i := 0
+		for {
+			select {
+			case <-done:
+				cpu.terminal.WriteRune('\r')
+				return
+			default:
+				cpu.terminal.WriteRune(frames[i%len(frames)])
+				time.Sleep(100 * time.Millisecond)
+				cpu.terminal.WriteRune('\b')
+				i++
 			}
 		}
+	}()
 
-		if !cmdFound {
-			fmt.Println("Неизвестная команда. Введите 'help' для списка команд")
-		}
+	fn()
+	close(done)
+}
+
+func wrapWithSpinner(cmd Command) Command {
+	return Command{
+		Name:     cmd.Name,
+		OpCode:   cmd.OpCode,
+		Operands: cmd.Operands,
+		Help:     cmd.Help,
+		Exec: func(cpu *CPUContext, args []string) error {
+			if cpu.terminal != nil && cpu.terminal.InputMode {
+				var err error
+				cpu.executeWithSpinner(func() {
+					err = cmd.Exec(cpu, args)
+				})
+				return err
+			}
+			return cmd.Exec(cpu, args)
+		},
 	}
 }
