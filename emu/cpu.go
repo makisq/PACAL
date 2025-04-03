@@ -543,6 +543,9 @@ func (ctx *CPUContext) clockGenerator(interval time.Duration) {
 }
 
 func (cpu *CPUContext) executeCommand(line string) error {
+	if cpu.labels == nil {
+		cpu.labels = make(map[string][4]bool)
+	}
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return nil
@@ -576,14 +579,14 @@ func (cpu *CPUContext) executeCommand(line string) error {
 			if cmd == "" {
 				continue
 			}
-
+			cmd = strings.TrimSpace(cmd)
 			if strings.HasSuffix(cmd, ":") {
-				if cpu.labels == nil {
-					cpu.labels = make(map[string][4]bool)
-				}
 				label := strings.TrimSuffix(cmd, ":")
-				addr := cpu.pc.Read()
-				cpu.labels[label] = addr
+				cpu.labels[label] = cpu.pc.Read()
+				if cpu.logger != nil {
+					cpu.logger.Printf("Сохранена метка '%s' по адресу %v\n",
+						label, cpu.pc.Read())
+				}
 				continue
 			}
 
@@ -1275,19 +1278,28 @@ func (ctx *CPUContext) Cleanup() {
 
 func (cpu *CPUContext) LoadProgram(code string) error {
 	cpu.program = strings.Split(code, "\n")
-	cpu.labels = make(map[string][4]bool)
-
+	if cpu.labels == nil {
+		cpu.labels = make(map[string][4]bool)
+	} else {
+		for k := range cpu.labels {
+			delete(cpu.labels, k)
+		}
+	}
 	currentAddr := [4]bool{false, false, false, false}
 	for _, line := range cpu.program {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, ";") {
 			continue
 		}
+
 		if strings.HasSuffix(line, ":") {
 			label := strings.TrimSuffix(line, ":")
-			cpu.labels[label] = currentAddr
+			addrCopy := [4]bool{}
+			copy(addrCopy[:], currentAddr[:])
+			cpu.labels[label] = addrCopy
 			continue
 		}
+
 		currentAddr = increment4Bit(currentAddr)
 	}
 	return nil
