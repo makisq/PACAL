@@ -830,6 +830,9 @@ func (cpu *CPUContext) executeInstruction(instr Instruction) error {
 			return cpu.executeJump(instr)
 		}
 		return nil
+	case OpHalt:
+		cpu.running = false
+		return nil
 
 	default:
 		return fmt.Errorf("неизвестный код операции: %d", instr.OpCode)
@@ -1137,6 +1140,16 @@ func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
 		}
 		instr.Reg1 = addr
 		instr.Reg2 = reg
+	case "hlt":
+		instr.OpCode = OpHalt
+		if len(args) > 0 {
+			return instr, fmt.Errorf("команда HLT не принимает аргументов (получено %d)", len(args))
+		}
+
+		// Для совместимости с pipeline-режимом
+		instr.Reg1 = -1 // Помечаем как отсутствующий
+		instr.Reg2 = -1
+		instr.Imm = [4]bool{false, false, false, false}
 
 	default:
 		return instr, fmt.Errorf("неизвестная команда: %s", cmd)
