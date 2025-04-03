@@ -5,7 +5,6 @@ import (
 )
 
 func (cpu *CPUContext) executeALUOp(instr Instruction) error {
-	// Работает одинаково в обоих режимах
 	aBits := cpu.regFile.Read(instr.Reg1)
 	bBits := cpu.regFile.Read(instr.Reg2)
 
@@ -96,5 +95,14 @@ func (cpu *CPUContext) executeJump(instr Instruction) error {
 			cpu.pc.Write(target)
 		}
 	}
+	return nil
+}
+
+func (cpu *CPUContext) executeHalt(instr Instruction) error {
+	cpu.running = false
+	if cpu.logger != nil {
+		cpu.logger.Println("CPU остановлен по команде HLT")
+	}
+	cpu.pipeline = Pipeline{}
 	return nil
 }
