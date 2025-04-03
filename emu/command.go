@@ -110,6 +110,13 @@ func initCommands() {
 			Exec:     jmpCommand,
 		},
 		{
+			Name:     "ret",
+			OpCode:   OpRet,
+			Operands: 0,
+			Help:     "ret - возврат из подпрограммы",
+			Exec:     retCommand,
+		},
+		{
 			Name:     "irq",
 			OpCode:   OpIRQ,
 			Operands: 1,
@@ -159,6 +166,13 @@ func initCommands() {
 				fmt.Printf("Последняя операция: %v\n", cpu.alu.lastOpTime)
 				return nil
 			},
+		},
+		{
+			Name:     "call",
+			OpCode:   OpCall,
+			Operands: 1,
+			Help:     "call <label/reg> - вызов подпрограммы",
+			Exec:     callCommand,
 		},
 		{
 			Name:     "hlt",
@@ -561,4 +575,39 @@ func wrapWithSpinner(cmd Command) Command {
 			return cmd.Exec(cpu, args)
 		},
 	}
+}
+
+func callCommand(cpu *CPUContext, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("требуется 1 аргумент (метка или регистр)")
+	}
+	currentPC := cpu.pc.Read()
+	nextPC := increment4Bit(currentPC)
+	cpu.regFile.Write(3, boolToByteSlice(nextPC[:]))
+	if strings.HasPrefix(args[0], "r") {
+		reg, err := parseRegister(args[0])
+		if err != nil {
+			return err
+		}
+		target := cpu.regFile.Read(reg)
+		var targetAddr [4]bool
+		copy(targetAddr[:], target[:4])
+		cpu.pc.Write(targetAddr)
+	} else {
+		if addr, ok := cpu.labels[args[0]]; ok {
+			cpu.pc.Write(addr)
+		} else {
+			return fmt.Errorf("неизвестная метка: %s", args[0])
+		}
+	}
+
+	return nil
+}
+
+func retCommand(cpu *CPUContext, _ []string) error {
+	returnAddr := cpu.regFile.Read(3)
+	var addr [4]bool
+	copy(addr[:], returnAddr[:4])
+	cpu.pc.Write(addr)
+	return nil
 }
