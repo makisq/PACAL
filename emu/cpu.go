@@ -640,7 +640,7 @@ func convertToInstruction(parts []string, labels map[string][4]bool) (Instructio
 		"mov": OpMov, "add": OpAdd, "sub": OpSub, "mul": OpMul,
 		"and": OpAnd, "or": OpOr, "xor": OpXor, "cmp": OpCmp,
 		"load": OpLoad, "store": OpStore, "jmp": OpJmp,
-		"jz": OpJz, "jnz": OpJnz, "jc": OpJc,
+		"jz": OpJz, "jnz": OpJnz, "jc": OpJc, "hlt": OpHalt,
 	}[parts[0]]
 	if !ok {
 		return Instruction{}, fmt.Errorf("неизвестная команда: %s", parts[0])
@@ -649,6 +649,14 @@ func convertToInstruction(parts []string, labels map[string][4]bool) (Instructio
 	instr := Instruction{OpCode: opcode}
 
 	if len(parts) > 1 {
+		if opcode == OpHalt {
+
+			if len(parts) > 1 {
+				return instr, fmt.Errorf("команда HLT не принимает аргументов")
+			}
+			instr.OpCode = OpHalt
+			return instr, nil
+		}
 
 		if reg, err := parseArg(parts[1], opcode == OpMov, pipelineMode, labels); err == nil {
 			if reg.isReg {
@@ -833,12 +841,7 @@ func (cpu *CPUContext) executeInstruction(instr Instruction) error {
 		}
 		return nil
 	case OpHalt:
-		cpu.running = false
-		if cpu.logger != nil {
-			cpu.logger.Println("CPU остановлен по команде HLT")
-		}
-		cpu.pipeline = Pipeline{}
-		return nil
+		return cpu.executeHalt(instr)
 
 	default:
 		return fmt.Errorf("неизвестный код операции: %d", instr.OpCode)
@@ -1364,6 +1367,7 @@ func (c *Command) String() string {
 		OpJz:    "jz",
 		OpJnz:   "jnz",
 		OpJc:    "jc",
+		OpHalt:  "hlt",
 	}
 	if name, ok := opCodeNames[c.OpCode]; ok {
 		return name
