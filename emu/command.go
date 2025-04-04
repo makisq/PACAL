@@ -628,6 +628,9 @@ func parseAddress(arg string) (int, error) {
 		}
 		return reg, nil
 	}
+	if len(arg) > 2 && strings.HasPrefix(strings.ToUpper(arg), "0X") {
+		arg = "0x" + arg[2:]
+	}
 	var num int64
 	var err error
 
@@ -639,9 +642,16 @@ func parseAddress(arg string) (int, error) {
 	default:
 		num, err = strconv.ParseInt(arg, 10, 8)
 	}
+	if strings.HasPrefix(arg, "r") {
+		reg, err := parseRegister(arg)
+		if err != nil {
+			return -1, fmt.Errorf("неверный регистр: %s (должен быть r0-r3)", arg)
+		}
+		return reg, nil
+	}
 
 	if err != nil {
-		return -1, fmt.Errorf("неверный формат адреса: %s. Ожидается: [rX], 0x0F, 0b1010 или число 0-15", arg)
+		return -1, fmt.Errorf("неверный аргумент: %s (допустимые форматы: r0-r3, 0-15, 0b0101, 0x0F, @label, hlt)", arg)
 	}
 
 	if num < 0 || num > 15 {
@@ -836,15 +846,23 @@ func MemRanges(cpu *CPUContext, args []string) error {
 			"  memrange <адрес>        - просмотр одного адреса\n"+
 			"  memrange <начало> <конец> - просмотр диапазона", len(args))
 	}
-
 	start, err := parseAddress(args[0])
 	if err != nil {
-		return fmt.Errorf("ошибка начального адреса '%s': %v\nДопустимые форматы: [rX], 0x0F, 0b1010, 10", args[0], err)
+		return fmt.Errorf("ошибка начального адреса '%s': %v", args[0], err)
+	}
+	if start >= 0 && start <= 3 {
+		regBits := cpu.regFile.Read(start)
+		start = bitsToInt(boolSliceTo4Bits(regBits))
 	}
 
 	end, err := parseAddress(args[1])
 	if err != nil {
-		return fmt.Errorf("ошибка конечного адреса '%s': %v\nДопустимые форматы: [rX], 0x0F, 0b1010, 10", args[1], err)
+		return fmt.Errorf("ошибка конечного адреса '%s': %v", args[1], err)
+	}
+
+	if end >= 0 && end <= 3 {
+		regBits := cpu.regFile.Read(end)
+		end = bitsToInt(boolSliceTo4Bits(regBits))
 	}
 
 	if start < 0 || start > 15 || end < 0 || end > 15 {
