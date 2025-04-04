@@ -30,9 +30,9 @@ func (cpu *CPUContext) adaptToInstructionExecutor(cmd string, args []string) err
 		case OpMov:
 			return cpu.executeMov(instr)
 		case OpMem:
-			return cpu.executeCommand(fmt.Sprintf("mem %d", instr.MemAddr))
+			return cpu.executeMemRanges(instr)
 		case OpMemRange:
-			return cpu.executeCommand(fmt.Sprintf("mem range %d %d", instr.MemAddr, instr.Reg1))
+			return cpu.executeMem(instr)
 		case OpRet:
 			return cpu.executeRet(instr)
 		default:
