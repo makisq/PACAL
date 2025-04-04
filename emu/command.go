@@ -475,6 +475,10 @@ func (cpu *CPUContext) pipelineExecuteCommand(line string) error {
 		if cmd == "" {
 			continue
 		}
+		if cmd == "run" {
+			cpu.Run()
+			continue
+		}
 
 		if strings.HasSuffix(cmd, ":") {
 			if cpu.labels == nil {
