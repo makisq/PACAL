@@ -1,5 +1,7 @@
 package main
 
+// allowManual = true - только строгий разбор 4-битных строк ("1010")
+// allowManual = false - поддерживает все форматы (числа, hex, binary)
 import (
 	"fmt"
 	"log"
@@ -573,6 +575,19 @@ func (cpu *CPUContext) executeCommand(line string) error {
 	if strings.Contains(line, ":") || strings.HasPrefix(line, ";") {
 		cpu.interfaceMode = 1
 	}
+	if cpu.interfaceMode == 1 {
+		commands := strings.Split(line, "|")
+		for _, cmd := range commands {
+			cmd = strings.TrimSpace(cmd)
+			if cmd == "" {
+				continue
+			}
+			if cmd == "run" {
+				cpu.Run()
+				continue
+			}
+		}
+	}
 
 	if cpu.interfaceMode == 1 {
 		commands := strings.Split(line, "|")
@@ -646,13 +661,21 @@ func convertToInstruction(parts []string, labels map[string][4]bool) (Instructio
 		"and": OpAnd, "or": OpOr, "xor": OpXor, "cmp": OpCmp,
 		"load": OpLoad, "store": OpStore, "jmp": OpJmp,
 		"jz": OpJz, "jnz": OpJnz, "jc": OpJc, "hlt": OpHalt,
-		"call": OpCall, "ret": OpRet,
+		"call": OpCall, "ret": OpRet, "run": -1,
 	}[parts[0]]
 	if !ok {
 		return Instruction{}, fmt.Errorf("неизвестная команда: %s", parts[0])
 	}
 
 	instr := Instruction{OpCode: opcode}
+
+	if opcode == OpHalt || opcode == OpRet || opcode == -1 {
+		if len(parts) > 1 {
+			return instr, fmt.Errorf("команда %s не принимает аргументов", parts[0])
+		}
+		return instr, nil
+	}
+
 	if opcode == OpHalt || opcode == OpRet {
 		if len(parts) > 1 {
 			return instr, fmt.Errorf("команда %s не принимает аргументов", parts[0])
@@ -741,7 +764,10 @@ func parseArg(arg string, allowValue bool, pipelineMode bool, labels map[string]
 	}
 	if pipelineMode {
 		if allowValue && len(arg) == 4 {
-			var bits [4]bool
+			bits, err := parseImmediate(arg, false)
+			if err == nil {
+				return parsedArg{isReg: false, bits: bits}, nil
+			}
 			valid := true
 			for i, c := range arg {
 				if c != '0' && c != '1' {
@@ -867,6 +893,10 @@ func (cpu *CPUContext) executeInstruction(instr Instruction) error {
 		return cpu.executeCall(instr)
 	case OpRet:
 		return cpu.executeRet(instr)
+	case -1:
+		cpu.logger.Println("Запуск выполнения программы")
+		cpu.Run()
+		return nil
 
 	default:
 		return fmt.Errorf("неизвестный код операции: %d", instr.OpCode)
@@ -966,6 +996,11 @@ func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
 			instr.IsMemSrc = true
 			instr.Address = intTo4Bits(reg)
 		} else if strings.HasPrefix(args[1], "r") {
+			bits, err := parseImmediate(args[1], false)
+			if err != nil {
+				return instr, err
+			}
+			instr.Imm = bits
 
 			reg, err := parseRegister(args[1])
 			if err != nil {
@@ -1225,6 +1260,13 @@ func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
 		} else {
 			instr.Label = args[0]
 		}
+	case "run":
+		instr.OpCode = -1
+		if len(args) > 0 {
+			return instr, fmt.Errorf("команда RUN не принимает аргументов")
+		}
+		instr.Reg1 = -1
+		instr.Reg2 = -1
 
 	default:
 		return instr, fmt.Errorf("неизвестная команда: %s", cmd)
@@ -1233,6 +1275,10 @@ func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
 	return instr, nil
 }
 func (cpu *CPUContext) Run() {
+	if cpu.running {
+		return
+	}
+	cpu.running = true
 	cpu.pcLine = 0
 	for cpu.running && cpu.pcLine < len(cpu.program) {
 		line := strings.TrimSpace(cpu.program[cpu.pcLine])
@@ -1283,6 +1329,28 @@ func (ctx *CPUContext) handleClockTick() {
 		ctx.pipeline.executeStage.op != OpJc {
 		ctx.pc.Increment()
 	}
+}
+func parseImmediate(arg string, allowManual bool) ([4]bool, error) {
+	arg = strings.TrimPrefix(arg, "0b")
+	arg = strings.TrimPrefix(arg, "0x")
+	if num, err := strconv.ParseInt(arg, 10, 16); err == nil {
+		if num < 0 || num > 15 {
+			return [4]bool{}, fmt.Errorf("число должно быть от 0 до 15")
+		}
+		return intTo4Bits(int(num)), nil
+	}
+	if len(arg) == 4 {
+		var bits [4]bool
+		for i, c := range arg {
+			if c != '0' && c != '1' {
+				return [4]bool{}, fmt.Errorf("недопустимый бит '%c'", c)
+			}
+			bits[i] = c == '1'
+		}
+		return bits, nil
+	}
+
+	return [4]bool{}, fmt.Errorf("неверный формат immediate-значения: %s", arg)
 }
 
 func (cpu *CPUContext) SwitchInterfaceMode() {
@@ -1428,6 +1496,7 @@ func intTo4Bits(n int) [4]bool {
 
 }
 func (c *Command) String() string {
+
 	opCodeNames := map[int]string{
 		OpAdd:   "add",
 		OpSub:   "sub",
@@ -1444,8 +1513,11 @@ func (c *Command) String() string {
 		OpJnz:   "jnz",
 		OpJc:    "jc",
 		OpHalt:  "hlt",
+		-1:      "run",
 		OpCall:  "call",
 		OpRet:   "ret",
+		-4:      "mem",
+		-2:      "step",
 	}
 	if name, ok := opCodeNames[c.OpCode]; ok {
 		return name
@@ -1460,6 +1532,10 @@ func decodeInstruction(instr [4]bool) (op int, reg1 int, reg2 int) {
 	op = boolToInt(instr[0])<<3 | boolToInt(instr[1])<<2 |
 
 		boolToInt(instr[2])<<1 | boolToInt(instr[3])
+
+	if op == -1 {
+		return op, 0, 0
+	}
 
 	if op >= OpIRQ {
 		return op, 0, 0
