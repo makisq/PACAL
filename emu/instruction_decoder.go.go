@@ -14,6 +14,7 @@ type Instruction struct {
 	IsMemDest bool
 	IsMemSrc  bool
 	Filename  string
+	MemAddr   int
 }
 
 func DecodeInstruction(instr [4]bool) Instruction {
@@ -66,6 +67,17 @@ func DecodeInstruction(instr [4]bool) Instruction {
 		return decoded
 	case -1:
 		return Instruction{OpCode: -1}
+	case -4:
+		decoded.MemAddr = boolToInt(instr[1])<<2 | boolToInt(instr[2])<<1 | boolToInt(instr[3])
+		return decoded
+	case -6:
+		if !instr[0] {
+			decoded.MemAddr = boolToInt(instr[1])<<2 | boolToInt(instr[2])<<1 | boolToInt(instr[3])
+		} else {
+			decoded.Reg1 = boolToInt(instr[1])<<2 | boolToInt(instr[2])<<1 | boolToInt(instr[3])
+			decoded.OpCode = OpMemRange
+		}
+		return decoded
 
 	default:
 		decoded.Reg1 = boolToInt(instr[1])
