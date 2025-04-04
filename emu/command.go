@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Command struct {
@@ -25,154 +26,233 @@ func hltCommand(cpu *CPUContext, _ []string) error {
 	fmt.Println("Процессор остановлен по команде HLT")
 	return nil
 }
+func helpCommand(cpu *CPUContext, _ []string) error {
+	fmt.Println("\nДоступные команды:")
+	fmt.Println("-----------------")
+
+	fmt.Println("\nАрифметические операции:")
+	printCommandHelp("add")
+	printCommandHelp("sub")
+	printCommandHelp("mul")
+
+	fmt.Println("\nЛогические операции:")
+	printCommandHelp("and")
+	printCommandHelp("or")
+	printCommandHelp("xor")
+
+	fmt.Println("\nОперации с памятью:")
+	printCommandHelp("load")
+	printCommandHelp("store")
+	printCommandHelp("mem")
+
+	fmt.Println("\nУправление потоком:")
+	printCommandHelp("jmp")
+	printCommandHelp("jz")
+	printCommandHelp("jnz")
+	printCommandHelp("jc")
+	printCommandHelp("call")
+	printCommandHelp("ret")
+	printCommandHelp("cmp")
+	printCommandHelp("irq")
+
+	fmt.Println("\nОтладка:")
+	printCommandHelp("regs")
+	printCommandHelp("step")
+	printCommandHelp("run")
+	printCommandHelp("perf")
+
+	fmt.Println("\nСохранения и загрузка файла состояния:")
+	printCommandHelp("save")
+	printCommandHelp("loadf")
+
+	fmt.Println("\nПрочие:")
+	printCommandHelp("help")
+	printCommandHelp("hlt")
+	printCommandHelp("mov")
+	fmt.Println("exit - выход из эмулятора")
+
+	return nil
+}
+
 func initCommands() {
 	rawCommands := []Command{
 		{
 			Name:     "add",
 			OpCode:   OpAdd,
 			Operands: 2,
-			Help:     "add <reg1> <reg2> - сложение регистров (reg1 = reg1 + reg2)",
+			Help:     "add <reg1> <reg2/imm/[mem]> - сложение (reg1 = reg1 + reg2 или imm или [mem])",
 			Exec:     genALUCommand(OpAdd),
 		},
 		{
-			Name:   "sub",
-			OpCode: OpSub,
-
+			Name:     "sub",
+			OpCode:   OpSub,
 			Operands: 2,
-			Help:     "sub <reg1> <reg2> - вычитание регистров (reg1 = reg1 - reg2)",
+			Help:     "sub <reg1> <reg2/imm/[mem]> - вычитание (reg1 = reg1 - reg2 или imm или [mem])",
 			Exec:     genALUCommand(OpSub),
 		},
 		{
 			Name:     "mul",
 			OpCode:   OpMul,
 			Operands: 2,
-			Help:     "mul <reg1> <reg2> - умножение регистров",
+			Help:     "mul <reg1> <reg2/imm/[mem]> - умножение (reg1 = reg1 * reg2 или imm или [mem])",
 			Exec:     genALUCommand(OpMul),
 		},
-
 		{
 			Name:     "and",
 			OpCode:   OpAnd,
 			Operands: 2,
-			Help:     "and <reg1> <reg2> - логическое И",
+			Help:     "and <reg1> <reg2/imm/[mem]> - логическое И (битовая операция)",
 			Exec:     genALUCommand(OpAnd),
 		},
 		{
 			Name:     "or",
 			OpCode:   OpOr,
 			Operands: 2,
-			Help:     "or <reg1> <reg2> - логическое ИЛИ",
+			Help:     "or <reg1> <reg2/imm/[mem]> - логическое ИЛИ (битовая операция)",
 			Exec:     genALUCommand(OpOr),
 		},
 		{
 			Name:     "xor",
 			OpCode:   OpXor,
 			Operands: 2,
-			Help:     "xor <reg1> <reg2> - исключающее ИЛИ",
+			Help:     "xor <reg1> <reg2/imm/[mem]> - исключающее ИЛИ (битовая операция)",
 			Exec:     genALUCommand(OpXor),
 		},
-
 		{
 			Name:     "cmp",
 			OpCode:   OpCmp,
 			Operands: 2,
-			Help:     "cmp <reg1> <reg2> - сравнение регистров (устанавливает флаги)",
+			Help:     "cmp <reg1> <reg2/imm/[mem]> - сравнение (устанавливает флаги Z и C)",
 			Exec:     genALUCommand(OpCmp),
 		},
 		{
 			Name:     "mov",
 			OpCode:   OpMov,
 			Operands: 2,
-			Help:     "mov <reg> <value> - запись значения в регистр (4 бита, напр. 1010)",
+			Help:     "mov <reg/[mem]> <reg/imm/[mem]> - запись значения (4 бита: 1010, 5, 0x5)",
 			Exec:     movCommand,
 		},
-
 		{
 			Name:     "load",
 			OpCode:   OpLoad,
 			Operands: 2,
-			Help:     "load <reg> <addr> - загрузка из памяти",
+			Help:     "load <reg> <[reg]/[imm]> - загрузка из памяти (reg = mem[addr])",
 			Exec:     loadCommand,
 		},
 		{
 			Name:     "store",
 			OpCode:   OpStore,
 			Operands: 2,
-			Help:     "store <addr> <reg> - запись в память",
+			Help:     "store <[reg]/[imm]> <reg> - запись в память (mem[addr] = reg)",
 			Exec:     storeCommand,
 		},
-
 		{
 			Name:     "jmp",
 			OpCode:   OpJmp,
 			Operands: 1,
-			Help:     "jmp <addr> - безусловный переход",
+			Help:     "jmp <reg/[imm]/label> - безусловный переход",
 			Exec:     jmpCommand,
+		},
+		{
+			Name:     "jz",
+			OpCode:   OpJz,
+			Operands: 1,
+			Help:     "jz <reg/[imm]/label> - переход если Z=1 (результат был 0)",
+			Exec:     jzCommand,
+		},
+		{
+			Name:     "jnz",
+			OpCode:   OpJnz,
+			Operands: 1,
+			Help:     "jnz <reg/[imm]/label> - переход если Z=0 (результат не 0)",
+			Exec:     jnzCommand,
+		},
+		{
+			Name:     "jc",
+			OpCode:   OpJc,
+			Operands: 1,
+			Help:     "jc <reg/[imm]/label> - переход если C=1 (было переполнение)",
+			Exec:     jcCommand,
+		},
+		{
+			Name:     "call",
+			OpCode:   OpCall,
+			Operands: 1,
+			Help:     "call <reg/[imm]/label> - вызов подпрограммы (адрес возврата в R3)",
+			Exec:     callCommand,
 		},
 		{
 			Name:     "ret",
 			OpCode:   OpRet,
 			Operands: 0,
-			Help:     "ret - возврат из подпрограммы",
+			Help:     "ret - возврат из подпрограммы (адрес из R3)",
 			Exec:     retCommand,
 		},
 		{
 			Name:     "irq",
 			OpCode:   OpIRQ,
 			Operands: 1,
-			Help:     "irq <num> - инициировать прерывание (0-3)",
+			Help:     "irq <0-3> - инициировать прерывание",
 			Exec:     irqCommand,
 		},
-
 		{
 			Name:     "regs",
 			OpCode:   -1,
 			Operands: 0,
-			Help:     "regs - показать регистры и флаги",
+			Help:     "regs - показать состояние регистров и флагов",
 			Exec:     regsCommand,
 		},
 		{
 			Name:     "run",
 			OpCode:   -1,
 			Operands: 0,
-			Help:     "run - запустить выполнение",
+			Help:     "run - запустить выполнение программы",
 			Exec:     runCommand,
 		},
 		{
 			Name:     "step",
 			OpCode:   -1,
 			Operands: 0,
-			Help:     "step - выполнить шаг",
+			Help:     "step - выполнить одну инструкцию",
 			Exec:     stepCommand,
 		},
 		{
 			Name:     "mem",
 			OpCode:   -1,
 			Operands: 1,
-			Help:     "mem <addr> - показать память",
+			Help:     "mem <[reg]/[imm]> - показать содержимое памяти по адресу",
 			Exec:     memCommand,
+		},
+		{
+			Name:     "save",
+			OpCode:   -1,
+			Operands: 1,
+			Help:     "save <file> - сохранить состояние процессора в файл",
+			Exec:     saveCommand,
+		},
+		{
+			Name:     "loadf",
+			OpCode:   -1,
+			Operands: 1,
+			Help:     "load <file> - загрузить состояние процессора из файла",
+			Exec:     loadfCommand,
 		},
 		{
 			Name:     "help",
 			OpCode:   -1,
 			Operands: 0,
-			Help:     "help - справка",
+			Help:     "help - показать эту справку",
 			Exec:     helpCommand,
 		},
 		{
-			Name: "perf",
-			Help: "Показать статистику производительности",
+			Name:     "perf",
+			OpCode:   -1,
+			Operands: 0,
+			Help:     "perf - показать статистику производительности",
 			Exec: func(cpu *CPUContext, _ []string) error {
 				fmt.Printf("Последняя операция: %v\n", cpu.alu.lastOpTime)
 				return nil
 			},
-		},
-		{
-			Name:     "call",
-			OpCode:   OpCall,
-			Operands: 1,
-			Help:     "call <label/reg> - вызов подпрограммы",
-			Exec:     callCommand,
 		},
 		{
 			Name:     "hlt",
@@ -230,6 +310,7 @@ func genALUCommand(op int) func(cpu *CPUContext, args []string) error {
 }
 
 func movCommand(cpu *CPUContext, args []string) error {
+
 	reg, err := parseRegister(args[0])
 	if err != nil {
 		return fmt.Errorf("неверный номер регистра: %v", err)
@@ -280,6 +361,61 @@ func loadCommand(cpu *CPUContext, args []string) error {
 	cpu.handleLoad()
 	return nil
 }
+func executeJumpCommand(cpu *CPUContext, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("требуется 1 аргумент (регистр, адрес или метка)")
+	}
+	if strings.HasPrefix(args[0], "r") {
+		reg, err := parseRegister(args[0])
+		if err != nil {
+			return fmt.Errorf("неверный регистр: %v", err)
+		}
+
+		target := cpu.regFile.Read(reg)
+		if len(target) < 4 {
+			return fmt.Errorf("неверный адрес в регистре R%d", reg)
+		}
+
+		var newPC [4]bool
+		copy(newPC[:], target[:4])
+		cpu.pc.Write(newPC)
+		return nil
+	}
+	if strings.HasPrefix(args[0], "@") {
+		label := args[0][1:]
+		if addr, ok := cpu.labels[label]; ok {
+			cpu.pc.Write(addr)
+			return nil
+		}
+		return fmt.Errorf("неизвестная метка: %s", label)
+	}
+	if addr, err := parseAddress(args[0]); err == nil {
+		cpu.pc.Write(intTo4Bits(addr))
+		return nil
+	}
+
+	return fmt.Errorf("неверный аргумент: %s (ожидается регистр, адрес или метка)", args[0])
+}
+func jzCommand(cpu *CPUContext, args []string) error {
+	if !cpu.alu.flags.zero {
+		return nil
+	}
+	return executeJumpCommand(cpu, args)
+}
+
+func jnzCommand(cpu *CPUContext, args []string) error {
+	if cpu.alu.flags.zero {
+		return nil
+	}
+	return executeJumpCommand(cpu, args)
+}
+
+func jcCommand(cpu *CPUContext, args []string) error {
+	if !cpu.alu.flags.carry {
+		return nil
+	}
+	return executeJumpCommand(cpu, args)
+}
 
 func storeCommand(cpu *CPUContext, args []string) error {
 	addr, err := parseAddress(args[0])
@@ -318,6 +454,20 @@ func jmpCommand(cpu *CPUContext, args []string) error {
 	cpu.pc.Write(newPC)
 
 	return nil
+}
+
+func saveCommand(cpu *CPUContext, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("использование: save <filename>")
+	}
+	return cpu.SaveState(args[0])
+}
+
+func loadfCommand(cpu *CPUContext, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("использование: load <filename>")
+	}
+	return cpu.LoadState(args[0])
 }
 
 func regsCommand(cpu *CPUContext, _ []string) error {
@@ -364,42 +514,6 @@ func stepCommand(cpu *CPUContext, _ []string) error {
 	fmt.Println("Выполнена одна инструкция")
 	return nil
 }
-
-func helpCommand(cpu *CPUContext, _ []string) error {
-	fmt.Println("\nДоступные команды:")
-	fmt.Println("-----------------")
-
-	fmt.Println("\nАрифметические операции:")
-	printCommandHelp("add")
-	printCommandHelp("sub")
-	printCommandHelp("mul")
-
-	fmt.Println("\nЛогические операции:")
-	printCommandHelp("and")
-	printCommandHelp("or")
-	printCommandHelp("xor")
-
-	fmt.Println("\nОперации с памятью:")
-	printCommandHelp("load")
-	printCommandHelp("store")
-	printCommandHelp("mem")
-
-	fmt.Println("\nУправление потоком:")
-	printCommandHelp("jmp")
-	printCommandHelp("cmp")
-	printCommandHelp("irq")
-
-	fmt.Println("\nОтладка:")
-	printCommandHelp("regs")
-	printCommandHelp("step")
-	printCommandHelp("run")
-
-	fmt.Println("\nПрочие:")
-	printCommandHelp("help")
-	fmt.Println("exit - выход из эмулятора")
-
-	return nil
-}
 func printCommandHelp(name string) {
 	for _, cmd := range commands {
 		if cmd.Name == name {
@@ -410,14 +524,24 @@ func printCommandHelp(name string) {
 }
 
 func parseRegister(arg string) (int, error) {
-	if !strings.HasPrefix(arg, "r") {
-		return -1, fmt.Errorf("ожидается регистр (r0-r3), получено: %s", arg)
+	if len(arg) != 2 {
+		return -1, fmt.Errorf("неверный формат регистра: %s (должен быть r0-r3)", arg)
 	}
-	reg, err := strconv.Atoi(arg[1:])
-	if err != nil || reg < 0 || reg > 3 {
-		return -1, fmt.Errorf("неверный регистр: %s (должен быть 0-3)", arg)
+	if arg[0] != 'r' {
+		return -1, fmt.Errorf("неверный префикс регистра: %s (должен быть r0-r3)", arg)
 	}
-	return reg, nil
+	regNum, err := strconv.Atoi(arg[1:])
+	if err != nil {
+		return -1, fmt.Errorf("неверный номер регистра: %s (должен быть 0-3)", arg)
+	}
+	if arg[0] > unicode.MaxASCII || arg[1] > unicode.MaxASCII {
+		return -1, fmt.Errorf("неверные символы в регистре: %s (используйте ASCII)", arg)
+	}
+	if regNum < 0 || regNum > 3 {
+		return -1, fmt.Errorf("неверный номер регистра: %s (должен быть 0-3)", arg)
+	}
+
+	return regNum, nil
 }
 
 func parseAddress(arg string) (int, error) {
