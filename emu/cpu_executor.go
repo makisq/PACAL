@@ -165,12 +165,19 @@ func (cpu *CPUContext) executeMem(instr Instruction) error {
 }
 
 func (cpu *CPUContext) executeMemRanges(instr Instruction) error {
-	if instr.OpCode != OpMemRange {
-		return fmt.Errorf("ожидалась команда mem_range, получен код %d", instr.OpCode)
-	}
-
 	start := instr.MemAddr
 	end := instr.Reg1
+
+	if instr.IsRegStart {
+		startBits := cpu.regFile.Read(start)
+		start = bitsToInt(boolSliceTo4Bits(startBits))
+	}
+
+	if instr.IsRegEnd {
+		endBits := cpu.regFile.Read(end)
+		end = bitsToInt(boolSliceTo4Bits(endBits))
+	}
+
 	if start < 0 || start > 15 || end < 0 || end > 15 {
 		return fmt.Errorf("адреса должны быть в диапазоне 0-15")
 	}
@@ -178,6 +185,7 @@ func (cpu *CPUContext) executeMemRanges(instr Instruction) error {
 	if start > end {
 		return fmt.Errorf("начальный адрес (%d) должен быть меньше конечного (%d)", start, end)
 	}
+
 	fmt.Println("Адрес | Бинарно | Десятично | Hex | Символ")
 	fmt.Println("----------------------------------------")
 
@@ -191,11 +199,7 @@ func (cpu *CPUContext) executeMemRanges(instr Instruction) error {
 		}
 
 		fmt.Printf(" %02X  | %04b    | %3d      | %02X  | %s\n",
-			addr,
-			data,
-			value,
-			value,
-			char)
+			addr, data, value, value, char)
 	}
 
 	return nil
