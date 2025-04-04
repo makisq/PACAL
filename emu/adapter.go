@@ -10,6 +10,10 @@ func (cpu *CPUContext) adaptToInstructionExecutor(cmd string, args []string) err
 	if err != nil {
 		return err
 	}
+	if cmd == "run" {
+		cpu.Run()
+		return nil
+	}
 
 	if cpu.interfaceMode == 1 {
 		return cpu.executeInstruction(instr)
@@ -34,7 +38,10 @@ func (cpu *CPUContext) adaptToInstructionExecutor(cmd string, args []string) err
 func (cpu *CPUContext) adaptToTextExecutor(instr Instruction) error {
 	var cmd string
 	var args []string
-
+	if instr.OpCode == -1 {
+		cpu.Run()
+		return nil
+	}
 	switch instr.OpCode {
 	case OpMov:
 		cmd = "mov"
