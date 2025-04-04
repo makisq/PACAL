@@ -44,7 +44,7 @@ func helpCommand(cpu *CPUContext, _ []string) error {
 	printCommandHelp("load")
 	printCommandHelp("store")
 	printCommandHelp("mem")
-	printCommandHelp("mem_range")
+	printCommandHelp("memrange")
 
 	fmt.Println("\nУправление потоком:")
 	printCommandHelp("jmp")
@@ -169,11 +169,11 @@ func initCommands() {
 			Exec:     jnzCommand,
 		},
 		{
-			Name:     "mem_range",
+			Name:     "memrange",
 			OpCode:   OpMemRange,
 			Operands: 2,
 			Help: "Просмотр содержимого диапазона памяти\n" +
-				"Формат: mem range <начало> <конец>\n" +
+				"Формат: memrange <начало> <конец>\n" +
 				"Примеры:\n" +
 				"  mem_range 0x0A 0x0F  # Просмотр адресов от 0A до 0F в hex\n" +
 				"  mem_range 5 10      # Просмотр адресов от 5 до 10 в decimal",
@@ -515,14 +515,61 @@ func regsCommand(cpu *CPUContext, _ []string) error {
 }
 
 func memCommand(cpu *CPUContext, args []string) error {
-
-	addr, err := parseAddress(args[1])
-	if err != nil {
-		return fmt.Errorf("неверный адрес памяти: %v", err)
+	if len(args) == 0 {
+		return fmt.Errorf("не указан адрес памяти\nИспользуйте: mem <адрес> или mem <начало> <конец>")
 	}
-	data := cpu.bus.Read(intTo4Bits(addr))
-	fmt.Printf("Память по адресу %02X: %s\n", addr, bitsToStr(data))
-	return nil
+
+	if len(args) == 1 {
+		addr, err := parseAddress(args[0])
+		if err != nil {
+			return fmt.Errorf("неверный адрес памяти '%s': %v\nДопустимые форматы: [rX], 0x0F, 0b1010, 10", args[0], err)
+		}
+		if addr < 0 || addr > 15 {
+			return fmt.Errorf("адрес должен быть от 0 до 15 (0x0 до 0xF)")
+		}
+
+		data := cpu.bus.Read(intTo4Bits(addr))
+		fmt.Printf("Память по адресу %02X: %s\n", addr, bitsToStr(data))
+		return nil
+	}
+
+	if len(args) == 2 {
+		start, err1 := parseAddress(args[0])
+		end, err2 := parseAddress(args[1])
+
+		if err1 != nil || err2 != nil {
+			var errMessages []string
+			if err1 != nil {
+				errMessages = append(errMessages, fmt.Sprintf("начальный адрес: %v", err1))
+			}
+			if err2 != nil {
+				errMessages = append(errMessages, fmt.Sprintf("конечный адрес: %v", err2))
+			}
+			return fmt.Errorf("ошибки парсинга адресов:\n%s", strings.Join(errMessages, "\n"))
+		}
+
+		if start < 0 || start > 15 || end < 0 || end > 15 {
+			return fmt.Errorf("адреса должны быть в диапазоне 0-15 (0x0-0xF)")
+		}
+		if start > end {
+			return fmt.Errorf("неверный диапазон: начальный адрес (%02X) должен быть меньше конечного (%02X)", start, end)
+		}
+		fmt.Println(" Адрес | Бинарно | Дес. | Hex | Символ")
+		fmt.Println("-------------------------------------")
+		for addr := start; addr <= end; addr++ {
+			data := cpu.bus.Read(intTo4Bits(addr))
+			value := bitsToInt(data)
+			char := " "
+			if value >= 32 && value <= 126 {
+				char = string(rune(value))
+			}
+			fmt.Printf(" 0x%02X | %04b    | %3d | %02X  | %s\n",
+				addr, data, value, value, char)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("неверное количество аргументов (%d)\nИспользуйте:\n  mem <адрес> - просмотр одного адреса\n  mem <начало> <конец> - просмотр диапазона", len(args))
 }
 
 func runCommand(cpu *CPUContext, _ []string) error {
@@ -784,14 +831,12 @@ func retCommand(cpu *CPUContext, _ []string) error {
 }
 
 func MemRanges(cpu *CPUContext, args []string) error {
-	// Проверка количества аргументов с подробным сообщением
 	if len(args) < 2 {
 		return fmt.Errorf("неверное количество аргументов (%d). Используйте:\n"+
-			"  mem <адрес>        - просмотр одного адреса\n"+
-			"  mem <начало> <конец> - просмотр диапазона", len(args))
+			"  memrange <адрес>        - просмотр одного адреса\n"+
+			"  memrange <начало> <конец> - просмотр диапазона", len(args))
 	}
 
-	// Парсинг адресов с защитой от паники
 	start, err := parseAddress(args[0])
 	if err != nil {
 		return fmt.Errorf("ошибка начального адреса '%s': %v\nДопустимые форматы: [rX], 0x0F, 0b1010, 10", args[0], err)
@@ -802,7 +847,6 @@ func MemRanges(cpu *CPUContext, args []string) error {
 		return fmt.Errorf("ошибка конечного адреса '%s': %v\nДопустимые форматы: [rX], 0x0F, 0b1010, 10", args[1], err)
 	}
 
-	// Проверка диапазонов с hex-выводом
 	if start < 0 || start > 15 || end < 0 || end > 15 {
 		return fmt.Errorf("адреса должны быть в диапазоне 0-15 (0x0-0xF)\n"+
 			"Получено: начало=0x%X, конец=0x%X", start, end)
@@ -812,7 +856,6 @@ func MemRanges(cpu *CPUContext, args []string) error {
 		return fmt.Errorf("неверный диапазон: начальный адрес (0x%X) должен быть меньше конечного (0x%X)", start, end)
 	}
 
-	// Вывод таблицы с выравниванием
 	fmt.Println(" Адрес | Бинарно | Дес. | Hex | Символ")
 	fmt.Println("-------------------------------------")
 
