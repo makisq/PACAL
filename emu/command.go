@@ -223,10 +223,10 @@ func initCommands() {
 			Exec:     runCommand,
 		},
 		{
-			Name:     "step(временно недоступна в pipe. Доступна только в shell)",
+			Name:     "step",
 			OpCode:   -1,
 			Operands: 0,
-			Help:     "step - выполнить одну инструкцию",
+			Help:     "step - выполнить одну инструкцию(временно недоступна в pipe. Доступна только в shell)",
 			Exec:     stepCommand,
 		},
 		{
@@ -258,14 +258,11 @@ func initCommands() {
 			Exec:     helpCommand,
 		},
 		{
-			Name:     "perf(доступна только в shell режиме. Но обрабатывает запросы и pipe)",
+			Name:     "perf",
 			OpCode:   -1,
 			Operands: 0,
-			Help:     "perf - показать статистику производительности",
-			Exec: func(cpu *CPUContext, _ []string) error {
-				fmt.Printf("Последняя операция: %v\n", cpu.alu.lastOpTime)
-				return nil
-			},
+			Help:     "perf - показать статистику производительности(доступна только в shell режиме. Но обрабатывает запросы и pipe)",
+			Exec:     perf,
 		},
 		{
 			Name:     "hlt",
@@ -511,6 +508,11 @@ func regsCommand(cpu *CPUContext, _ []string) error {
 
 	pcValue := cpu.pc.Read()
 	fmt.Printf("\nPC (Program Counter): %s\n", bitsToStr(pcValue))
+	return nil
+}
+
+func perf(cpu *CPUContext, _ []string) error {
+	fmt.Printf("Последняя операция: %v\n", cpu.alu.lastOpTime)
 	return nil
 }
 
