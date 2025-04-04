@@ -48,6 +48,8 @@ func DecodeInstruction(instr [4]bool) Instruction {
 		decoded.Reg1 = boolToInt(instr[1])
 		decoded.Address = [4]bool{false, instr[1], instr[2], instr[3]}
 		return decoded
+	case -1:
+		return Instruction{OpCode: -1}
 
 	default:
 		decoded.Reg1 = boolToInt(instr[1])
