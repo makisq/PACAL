@@ -35,7 +35,9 @@ const (
 	OpJz
 	OpJnz
 	OpJc
+	OpMem = -3
 	OpIRQ
+	OpMemRange = -6
 	OpIRET
 	OpEI
 	OpDI
@@ -54,6 +56,14 @@ type DFlipFlop struct {
 	reset bool
 
 	out bool
+}
+
+type parsedArg struct {
+	isReg  bool
+	value  int
+	isImm  bool
+	bits   [4]bool
+	isHalt bool
 }
 
 type Register4bit struct {
@@ -744,6 +754,7 @@ func convertToInstruction(parts []string, labels map[string][4]bool) (Instructio
 		"load": OpLoad, "store": OpStore, "jmp": OpJmp,
 		"jz": OpJz, "jnz": OpJnz, "jc": OpJc, "hlt": OpHalt,
 		"call": OpCall, "ret": OpRet, "run": -1, "save": -3, "loadf": -5,
+		"mem": -4, "memrange": -6,
 	}[parts[0]]
 	if !ok {
 		return Instruction{}, fmt.Errorf("неизвестная команда: %s", parts[0])
@@ -808,14 +819,6 @@ func convertToInstruction(parts []string, labels map[string][4]bool) (Instructio
 	}
 
 	return instr, nil
-}
-
-type parsedArg struct {
-	isReg  bool
-	value  int
-	isImm  bool
-	bits   [4]bool
-	isHalt bool
 }
 
 func parseArg(arg string, allowValue bool, pipelineMode bool, labels map[string][4]bool) (parsedArg, error) {
@@ -930,7 +933,6 @@ func (cpu *CPUContext) executeInstruction(instr Instruction) error {
 		cpu.regFile.Write(instr.Reg1, boolToByteSlice(result[:]))
 		cpu.alu.flags = flags
 		return nil
-
 	case OpLoad:
 		// LOAD Rd, [Rs]
 		addrBits := cpu.regFile.Read(instr.Reg2)
@@ -979,18 +981,38 @@ func (cpu *CPUContext) executeInstruction(instr Instruction) error {
 		cpu.logger.Println("Запуск выполнения программы")
 		cpu.Run()
 		return nil
-
 	case -3:
-		if instr.Filename == "" {
-			return fmt.Errorf("не указано имя файла для сохранения")
+		addr := instr.MemAddr
+		if addr < 0 || addr > 15 {
+			return fmt.Errorf("адрес памяти должен быть от 0 до 15")
 		}
-		return cpu.SaveState(instr.Filename)
+		data := cpu.bus.Read(intTo4Bits(addr))
+		fmt.Printf("Память по адресу %02X: %s\n", addr, bitsToStr(data))
+		return nil
 
-	case -5:
-		if instr.Filename == "" {
-			return fmt.Errorf("не указано имя файла для загрузки")
+	case -6:
+		start := instr.MemAddr
+		end := instr.Reg1
+		if start < 0 || start > 15 || end < 0 || end > 15 {
+			return fmt.Errorf("адреса должны быть от 0 до 15")
 		}
-		return cpu.LoadfProgram(instr.Filename)
+		if start > end {
+			return fmt.Errorf("начальный адрес должен быть меньше конечного")
+		}
+
+		fmt.Println("Адрес | Бинарно | Десятично | Hex | Символ")
+		fmt.Println("----------------------------------------")
+		for addr := start; addr <= end; addr++ {
+			data := cpu.bus.Read(intTo4Bits(addr))
+			value := bitsToInt(data)
+			char := " "
+			if value >= 32 && value <= 126 {
+				char = string(rune(value))
+			}
+			fmt.Printf(" %02X  | %04b    | %3d      | %02X  | %s\n",
+				addr, data, value, value, char)
+		}
+		return nil
 
 	default:
 		return fmt.Errorf("неизвестный код операции: %d", instr.OpCode)
@@ -1068,45 +1090,28 @@ func (cpu *CPUContext) executeMov(instr Instruction) error {
 
 func (cpu *CPUContext) SaveState(filename string) error {
 	state := CPUState{}
-
-	// Сохраняем регистры
 	for i := 0; i < 4; i++ {
 		reg := cpu.regFile.Read(i)
 		copy(state.Registers[i][:], reg[:4])
 	}
-
-	// Сохраняем PC
 	state.PC = cpu.pc.Read()
-
-	// Сохраняем память
 	for i := 0; i < 16; i++ {
 		state.Memory[i] = cpu.bus.Read(intTo4Bits(i))
 	}
-
-	// Сохраняем метки
 	state.Labels = make(map[string][4]bool)
 	for k, v := range cpu.labels {
 		state.Labels[k] = v
 	}
-
-	// Сохраняем стек вызовов
 	state.CallStack = make([][4]bool, len(cpu.callStack))
 	copy(state.CallStack, cpu.callStack)
 
-	// Сохраняем флаги
 	state.Flags.Zero = cpu.alu.flags.zero
 	state.Flags.Carry = cpu.alu.flags.carry
-
-	// Сохраняем состояние прерываний
 	state.Interrupts = cpu.alu.interrupts
-
-	// Сериализуем в JSON
 	data, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("ошибка сериализации: %v", err)
 	}
-
-	// Записываем в файл
 	err = os.WriteFile(filename, data, 0644)
 	if err != nil {
 		return fmt.Errorf("ошибка записи в файл: %v", err)
@@ -1116,47 +1121,30 @@ func (cpu *CPUContext) SaveState(filename string) error {
 }
 
 func (cpu *CPUContext) LoadState(filename string) error {
-	// Читаем файл
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return fmt.Errorf("ошибка чтения файла: %v", err)
 	}
-
-	// Десериализуем
 	var state CPUState
 	err = json.Unmarshal(data, &state)
 	if err != nil {
 		return fmt.Errorf("ошибка десериализации: %v", err)
 	}
-
-	// Восстанавливаем регистры
 	for i := 0; i < 4; i++ {
 		cpu.regFile.Write(i, boolToByteSlice(state.Registers[i][:]))
 	}
-
-	// Восстанавливаем PC
 	cpu.pc.Write(state.PC)
-
-	// Восстанавливаем память
 	for i := 0; i < 16; i++ {
 		cpu.bus.Write(intTo4Bits(i), state.Memory[i], true)
 	}
-
-	// Восстанавливаем метки
 	cpu.labels = make(map[string][4]bool)
 	for k, v := range state.Labels {
 		cpu.labels[k] = v
 	}
-
-	// Восстанавливаем стек вызовов
 	cpu.callStack = make([][4]bool, len(state.CallStack))
 	copy(cpu.callStack, state.CallStack)
-
-	// Восстанавливаем флаги
 	cpu.alu.flags.zero = state.Flags.Zero
 	cpu.alu.flags.carry = state.Flags.Carry
-
-	// Восстанавливаем прерывания
 	cpu.alu.interrupts = state.Interrupts
 
 	return nil
@@ -1252,6 +1240,72 @@ func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
 			}
 			instr.Reg2 = -1
 		}
+	case "mem":
+		if len(args) == 1 {
+			addr, err := parseAddress(args[0])
+			if err != nil {
+				return Instruction{}, fmt.Errorf("неверный адрес памяти: %v", err)
+			}
+			return Instruction{
+				OpCode:  OpMem,
+				MemAddr: addr,
+			}, nil
+		}
+
+		if len(args) == 2 {
+			start, err1 := parseAddress(args[0])
+			end, err2 := parseAddress(args[1])
+			if err1 != nil || err2 != nil {
+				var errs []string
+				if err1 != nil {
+					errs = append(errs, fmt.Sprintf("начальный адрес: %v", err1))
+				}
+				if err2 != nil {
+					errs = append(errs, fmt.Sprintf("конечный адрес: %v", err2))
+				}
+				return Instruction{}, fmt.Errorf("ошибки парсинга: %s", strings.Join(errs, ", "))
+			}
+
+			if start > end {
+				return Instruction{}, fmt.Errorf("начальный адрес (%d) должен быть меньше конечного (%d)", start, end)
+			}
+
+			return Instruction{
+				OpCode:  OpMemRange,
+				MemAddr: start,
+				Reg1:    end,
+			}, nil
+		}
+
+		return Instruction{}, fmt.Errorf("неверное количество аргументов для mem, требуется 1 или 2")
+	case "memrange":
+		if len(args) == 2 {
+			start, err1 := parseAddress(args[0])
+			end, err2 := parseAddress(args[1])
+			if err1 != nil || err2 != nil {
+				var errs []string
+				if err1 != nil {
+					errs = append(errs, fmt.Sprintf("начальный адрес: %v", err1))
+				}
+				if err2 != nil {
+					errs = append(errs, fmt.Sprintf("конечный адрес: %v", err2))
+				}
+				return Instruction{}, fmt.Errorf("ошибки парсинга: %s", strings.Join(errs, ", "))
+			}
+
+			if start > end {
+				return Instruction{}, fmt.Errorf("начальный адрес (%d) должен быть меньше конечного (%d)", start, end)
+			}
+
+			return Instruction{
+				OpCode:  OpMemRange,
+				MemAddr: start,
+				Reg1:    end,
+			}, nil
+		}
+
+		return Instruction{}, fmt.Errorf("неверное количество аргументов для mem, требуется 1 или 2")
+
 	case "save":
 		instr.OpCode = -3
 		if len(args) < 1 {
@@ -1712,10 +1766,11 @@ func (c *Command) String() string {
 		-1:      "run",
 		OpCall:  "call",
 		OpRet:   "ret",
-		-4:      "mem",
+		-3:      "mem",
 		-2:      "step",
-		-3:      "save",
+		-4:      "save",
 		-5:      "loadf",
+		-6:      "memrange",
 	}
 	if name, ok := opCodeNames[c.OpCode]; ok {
 		return name
