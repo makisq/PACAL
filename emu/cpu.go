@@ -990,27 +990,19 @@ func (cpu *CPUContext) executeInstruction(instr Instruction) error {
 		fmt.Printf("Память по адресу %02X: %s\n", addr, bitsToStr(data))
 		return nil
 
-	case -6:
+	case OpMemRange:
 		start := instr.MemAddr
 		end := instr.Reg1
+
 		if start < 0 || start > 15 || end < 0 || end > 15 {
-			return fmt.Errorf("адреса должны быть от 0 до 15")
-		}
-		if start > end {
-			return fmt.Errorf("начальный адрес должен быть меньше конечного")
+			return fmt.Errorf("неверный диапазон адресов")
 		}
 
-		fmt.Println("Адрес | Бинарно | Десятично | Hex | Символ")
-		fmt.Println("----------------------------------------")
+		fmt.Println("Адрес | Значение")
+		fmt.Println("--------------")
 		for addr := start; addr <= end; addr++ {
 			data := cpu.bus.Read(intTo4Bits(addr))
-			value := bitsToInt(data)
-			char := " "
-			if value >= 32 && value <= 126 {
-				char = string(rune(value))
-			}
-			fmt.Printf(" %02X  | %04b    | %3d      | %02X  | %s\n",
-				addr, data, value, value, char)
+			fmt.Printf(" %02X  | %s\n", addr, bitsToStr(data))
 		}
 		return nil
 
@@ -1279,32 +1271,33 @@ func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
 
 		return Instruction{}, fmt.Errorf("неверное количество аргументов для mem, требуется 1 или 2")
 	case "memrange":
-		if len(args) == 2 {
-			start, err1 := parseAddress(args[0])
-			end, err2 := parseAddress(args[1])
-			if err1 != nil || err2 != nil {
-				var errs []string
-				if err1 != nil {
-					errs = append(errs, fmt.Sprintf("начальный адрес: %v", err1))
-				}
-				if err2 != nil {
-					errs = append(errs, fmt.Sprintf("конечный адрес: %v", err2))
-				}
-				return Instruction{}, fmt.Errorf("ошибки парсинга: %s", strings.Join(errs, ", "))
-			}
-
-			if start > end {
-				return Instruction{}, fmt.Errorf("начальный адрес (%d) должен быть меньше конечного (%d)", start, end)
-			}
-
-			return Instruction{
-				OpCode:  OpMemRange,
-				MemAddr: start,
-				Reg1:    end,
-			}, nil
+		if len(args) != 2 {
+			return Instruction{}, fmt.Errorf("требуется 2 аргумента: начальный и конечный адрес")
 		}
 
-		return Instruction{}, fmt.Errorf("неверное количество аргументов для mem, требуется 1 или 2")
+		start, err1 := parseAddress(args[0])
+		end, err2 := parseAddress(args[1])
+
+		if err1 != nil {
+			return Instruction{}, fmt.Errorf("начальный адрес: %v", err1)
+		}
+		if err2 != nil {
+			return Instruction{}, fmt.Errorf("конечный адрес: %v", err2)
+		}
+
+		if start < 0 || start > 15 || end < 0 || end > 15 {
+			return Instruction{}, fmt.Errorf("адреса должны быть от 0 до 15")
+		}
+
+		if start > end {
+			return Instruction{}, fmt.Errorf("начальный адрес (%d) должен быть меньше конечного (%d)", start, end)
+		}
+
+		return Instruction{
+			OpCode:  OpMemRange,
+			MemAddr: start,
+			Reg1:    end,
+		}, nil
 
 	case "save":
 		instr.OpCode = -3
