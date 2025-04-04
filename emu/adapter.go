@@ -29,6 +29,8 @@ func (cpu *CPUContext) adaptToInstructionExecutor(cmd string, args []string) err
 			return cpu.executeJump(instr)
 		case OpMov:
 			return cpu.executeMov(instr)
+		case OpRet:
+			return cpu.executeRet(instr)
 		default:
 			return fmt.Errorf("unknown command: %s", cmd)
 		}
