@@ -3,6 +3,7 @@ package main
 // allowManual = true - только строгий разбор 4-битных строк ("1010")
 // allowManual = false - поддерживает все форматы (числа, hex, binary)
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -95,6 +96,19 @@ type Pipeline struct {
 	executeStage PipelineStage
 }
 
+type CPUState struct {
+	Registers [4][4]bool
+	PC        [4]bool
+	Memory    [16][4]bool
+	Labels    map[string][4]bool
+	CallStack [][4]bool
+	Flags     struct {
+		Zero  bool
+		Carry bool
+	}
+	Interrupts InterruptState
+}
+
 type InterruptState struct {
 	irqMask    [4]bool
 	irqStatus  [4]bool
@@ -116,6 +130,7 @@ type CPUContext struct {
 	program       []string
 	alu           *ALU
 	pc            *PCRegister
+	callStack     [][4]bool
 	pipeline      Pipeline
 	pcLine        int
 	interfaceMode int // 0 = Shell, 1 = Pipeline
@@ -236,6 +251,10 @@ func (cpu *CPUContext) ExecuteTextCommand(cmd string, args []string) error {
 		return cpu.executeMov(instr)
 	case OpAdd, OpSub, OpMul, OpAnd, OpOr, OpXor, OpCmp:
 		return cpu.executeALUOp(instr)
+	case -3:
+		return cpu.executeSave(instr)
+	case -5:
+		return cpu.executeLoadf(instr)
 	case OpJmp, OpJz, OpJnz, OpJc:
 		return cpu.executeJump(instr)
 	case OpLoad:
@@ -528,6 +547,22 @@ func InitializeCPU() *CPUContext {
 	for i := 0; i < 4; i++ {
 		ctx.logger.Printf("R%d: %v\n", i, ctx.regFile.Read(i))
 	}
+	if _, err := os.Stat("cpu_state.json"); err == nil {
+		if err := ctx.LoadState("cpu_state.json"); err != nil {
+			ctx.logger.Printf("Не удалось загрузить состояние: %v", err)
+		} else {
+			ctx.logger.Println("Состояние загружено из cpu_state.json")
+		}
+	}
+	go func() {
+		<-ctx.stopChan
+		if err := ctx.SaveState("cpu_state.json"); err != nil {
+			ctx.logger.Printf("Не удалось сохранить состояние: %v", err)
+		} else {
+			ctx.logger.Println("Состояние сохранено в cpu_state.json")
+		}
+		os.Exit(0)
+	}()
 
 	return ctx
 }
@@ -546,6 +581,19 @@ func (ctx *CPUContext) clockGenerator(interval time.Duration) {
 	}
 }
 
+func (cpu *CPUContext) SaveProgram(filename string) error {
+	data := strings.Join(cpu.program, "\n")
+	return os.WriteFile(filename, []byte(data), 0644)
+}
+
+func (cpu *CPUContext) LoadfProgram(filename string) error {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+	return cpu.LoadfProgram(string(data))
+}
+
 func (cpu *CPUContext) executeCommand(line string) error {
 	if cpu.labels == nil {
 		cpu.labels = make(map[string][4]bool)
@@ -556,6 +604,40 @@ func (cpu *CPUContext) executeCommand(line string) error {
 	}
 	cleanLine := strings.TrimSuffix(line, "|")
 	cleanLine = strings.TrimSpace(cleanLine)
+
+	if cpu.interfaceMode == 1 {
+		commands := strings.Split(line, "|")
+		for _, cmd := range commands {
+			cmd = strings.TrimSpace(cmd)
+			if cmd == "" {
+				continue
+			}
+
+			if strings.HasPrefix(cmd, "save ") {
+				filename := strings.TrimPrefix(cmd, "save ")
+				filename = strings.TrimSpace(filename)
+				if filename == "" {
+					return fmt.Errorf("не указано имя файла для сохранения")
+				}
+				if err := cpu.SaveState(filename); err != nil {
+					return fmt.Errorf("ошибка сохранения: %v", err)
+				}
+				continue
+			}
+
+			if strings.HasPrefix(cmd, "loadf ") {
+				filename := strings.TrimPrefix(cmd, "loadf ")
+				filename = strings.TrimSpace(filename)
+				if filename == "" {
+					return fmt.Errorf("не указано имя файла для загрузки")
+				}
+				if err := cpu.LoadfProgram(filename); err != nil {
+					return fmt.Errorf("ошибка загрузки: %v", err)
+				}
+				continue
+			}
+		}
+	}
 
 	switch cleanLine {
 	case "help":
@@ -661,7 +743,7 @@ func convertToInstruction(parts []string, labels map[string][4]bool) (Instructio
 		"and": OpAnd, "or": OpOr, "xor": OpXor, "cmp": OpCmp,
 		"load": OpLoad, "store": OpStore, "jmp": OpJmp,
 		"jz": OpJz, "jnz": OpJnz, "jc": OpJc, "hlt": OpHalt,
-		"call": OpCall, "ret": OpRet, "run": -1,
+		"call": OpCall, "ret": OpRet, "run": -1, "save": -3, "loadf": -5,
 	}[parts[0]]
 	if !ok {
 		return Instruction{}, fmt.Errorf("неизвестная команда: %s", parts[0])
@@ -898,15 +980,42 @@ func (cpu *CPUContext) executeInstruction(instr Instruction) error {
 		cpu.Run()
 		return nil
 
+	case -3:
+		if instr.Filename == "" {
+			return fmt.Errorf("не указано имя файла для сохранения")
+		}
+		return cpu.SaveState(instr.Filename)
+
+	case -5:
+		if instr.Filename == "" {
+			return fmt.Errorf("не указано имя файла для загрузки")
+		}
+		return cpu.LoadfProgram(instr.Filename)
+
 	default:
 		return fmt.Errorf("неизвестный код операции: %d", instr.OpCode)
 	}
 }
 
 func (cpu *CPUContext) executeRet(instr Instruction) error {
+	if len(cpu.callStack) > 0 {
+		returnAddr := cpu.callStack[len(cpu.callStack)-1]
+		cpu.callStack = cpu.callStack[:len(cpu.callStack)-1]
+		cpu.pc.Write(returnAddr)
+		return nil
+	}
 	returnAddr := cpu.regFile.Read(3)
+	if len(returnAddr) < 4 {
+		return fmt.Errorf("неверный адрес возврата в R3")
+	}
+
 	var addr [4]bool
 	copy(addr[:], returnAddr[:4])
+
+	if bitsToInt(addr) >= len(cpu.program) {
+		return fmt.Errorf("недопустимый адрес возврата: %v", addr)
+	}
+
 	cpu.pc.Write(addr)
 	return nil
 }
@@ -914,6 +1023,7 @@ func (cpu *CPUContext) executeRet(instr Instruction) error {
 func (cpu *CPUContext) executeCall(instr Instruction) error {
 	currentPC := cpu.pc.Read()
 	nextPC := increment4Bit(currentPC)
+	cpu.callStack = append(cpu.callStack, nextPC)
 	cpu.regFile.Write(3, boolToByteSlice(nextPC[:]))
 	if instr.Reg1 >= 0 {
 		target := cpu.regFile.Read(instr.Reg1)
@@ -930,7 +1040,6 @@ func (cpu *CPUContext) executeCall(instr Instruction) error {
 
 	return nil
 }
-
 func (cpu *CPUContext) executeMov(instr Instruction) error {
 	var value [4]bool
 
@@ -953,6 +1062,102 @@ func (cpu *CPUContext) executeMov(instr Instruction) error {
 
 		cpu.regFile.Write(instr.Reg1, boolToByteSlice(value[:]))
 	}
+
+	return nil
+}
+
+func (cpu *CPUContext) SaveState(filename string) error {
+	state := CPUState{}
+
+	// Сохраняем регистры
+	for i := 0; i < 4; i++ {
+		reg := cpu.regFile.Read(i)
+		copy(state.Registers[i][:], reg[:4])
+	}
+
+	// Сохраняем PC
+	state.PC = cpu.pc.Read()
+
+	// Сохраняем память
+	for i := 0; i < 16; i++ {
+		state.Memory[i] = cpu.bus.Read(intTo4Bits(i))
+	}
+
+	// Сохраняем метки
+	state.Labels = make(map[string][4]bool)
+	for k, v := range cpu.labels {
+		state.Labels[k] = v
+	}
+
+	// Сохраняем стек вызовов
+	state.CallStack = make([][4]bool, len(cpu.callStack))
+	copy(state.CallStack, cpu.callStack)
+
+	// Сохраняем флаги
+	state.Flags.Zero = cpu.alu.flags.zero
+	state.Flags.Carry = cpu.alu.flags.carry
+
+	// Сохраняем состояние прерываний
+	state.Interrupts = cpu.alu.interrupts
+
+	// Сериализуем в JSON
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("ошибка сериализации: %v", err)
+	}
+
+	// Записываем в файл
+	err = os.WriteFile(filename, data, 0644)
+	if err != nil {
+		return fmt.Errorf("ошибка записи в файл: %v", err)
+	}
+
+	return nil
+}
+
+func (cpu *CPUContext) LoadState(filename string) error {
+	// Читаем файл
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return fmt.Errorf("ошибка чтения файла: %v", err)
+	}
+
+	// Десериализуем
+	var state CPUState
+	err = json.Unmarshal(data, &state)
+	if err != nil {
+		return fmt.Errorf("ошибка десериализации: %v", err)
+	}
+
+	// Восстанавливаем регистры
+	for i := 0; i < 4; i++ {
+		cpu.regFile.Write(i, boolToByteSlice(state.Registers[i][:]))
+	}
+
+	// Восстанавливаем PC
+	cpu.pc.Write(state.PC)
+
+	// Восстанавливаем память
+	for i := 0; i < 16; i++ {
+		cpu.bus.Write(intTo4Bits(i), state.Memory[i], true)
+	}
+
+	// Восстанавливаем метки
+	cpu.labels = make(map[string][4]bool)
+	for k, v := range state.Labels {
+		cpu.labels[k] = v
+	}
+
+	// Восстанавливаем стек вызовов
+	cpu.callStack = make([][4]bool, len(state.CallStack))
+	copy(cpu.callStack, state.CallStack)
+
+	// Восстанавливаем флаги
+	cpu.alu.flags.zero = state.Flags.Zero
+	cpu.alu.flags.carry = state.Flags.Carry
+
+	// Восстанавливаем прерывания
+	cpu.alu.interrupts = state.Interrupts
 
 	return nil
 }
@@ -985,7 +1190,6 @@ func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
 			}
 			instr.Reg1 = reg
 		}
-
 		if strings.HasPrefix(args[1], "[") && strings.HasSuffix(args[1], "]") {
 
 			regStr := strings.TrimSuffix(strings.TrimPrefix(args[1], "["), "]")
@@ -1048,103 +1252,66 @@ func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
 			}
 			instr.Reg2 = -1
 		}
+	case "save":
+		instr.OpCode = -3
+		if len(args) < 1 {
+			return instr, fmt.Errorf("filename required for save")
+		}
+		instr.Filename = args[0]
+		return instr, nil
 
-	case "add":
-		instr.OpCode = OpAdd
+	case "loadf":
+		instr.OpCode = -5
+		if len(args) < 1 {
+			return instr, fmt.Errorf("filename required for loadf")
+		}
+		instr.Filename = args[0]
+		return instr, nil
+
+	case "add", "sub", "mul", "and", "or", "xor":
+		instr.OpCode = map[string]int{
+			"add": OpAdd,
+			"sub": OpSub,
+			"mul": OpMul,
+			"and": OpAnd,
+			"or":  OpOr,
+			"xor": OpXor,
+		}[cmd]
+
 		if len(args) < 2 {
-			return instr, fmt.Errorf("недостаточно аргументов для ADD")
+			return instr, fmt.Errorf("not enough arguments for %s", cmd)
 		}
 		reg1, err := parseRegister(args[0])
 		if err != nil {
-			return instr, fmt.Errorf("неверный первый аргумент для ADD: %v", err)
-		}
-		reg2, err := parseRegister(args[1])
-		if err != nil {
-			return instr, fmt.Errorf("неверный второй аргумент для ADD: %v", err)
+			return instr, fmt.Errorf("invalid first argument for %s: %v", cmd, err)
 		}
 		instr.Reg1 = reg1
-		instr.Reg2 = reg2
-
-	case "sub":
-		instr.OpCode = OpSub
-		if len(args) < 2 {
-			return instr, fmt.Errorf("недостаточно аргументов для SUB")
+		if strings.HasPrefix(args[1], "[") {
+			addrStr := strings.Trim(args[1], "[]")
+			if reg, err := parseRegister(addrStr); err == nil {
+				instr.Reg2 = reg
+				instr.IsMemSrc = true
+			} else if addr, err := parseAddress(addrStr); err == nil {
+				instr.Imm = intTo4Bits(addr)
+				instr.IsMemSrc = true
+			} else {
+				return instr, fmt.Errorf("invalid memory address: %s", args[1])
+			}
+		} else if strings.HasPrefix(args[1], "r") {
+			reg2, err := parseRegister(args[1])
+			if err != nil {
+				return instr, fmt.Errorf("invalid second argument for %s: %v", cmd, err)
+			}
+			instr.Reg2 = reg2
+		} else {
+			bits, err := parseImmediate(args[1], false)
+			if err != nil {
+				return instr, fmt.Errorf("invalid immediate value: %v", err)
+			}
+			instr.Imm = bits
+			instr.Reg2 = -1
 		}
-		reg1, err := parseRegister(args[0])
-		if err != nil {
-			return instr, fmt.Errorf("неверный первый аргумент для SUB: %v", err)
-		}
-		reg2, err := parseRegister(args[1])
-		if err != nil {
-			return instr, fmt.Errorf("неверный второй аргумент для SUB: %v", err)
-		}
-		instr.Reg1 = reg1
-		instr.Reg2 = reg2
-
-	case "mul":
-		instr.OpCode = OpMul
-		if len(args) < 2 {
-			return instr, fmt.Errorf("недостаточно аргументов для MUL")
-		}
-		reg1, err := parseRegister(args[0])
-		if err != nil {
-			return instr, fmt.Errorf("неверный первый аргумент для MUL: %v", err)
-		}
-		reg2, err := parseRegister(args[1])
-		if err != nil {
-			return instr, fmt.Errorf("неверный второй аргумент для MUL: %v", err)
-		}
-		instr.Reg1 = reg1
-		instr.Reg2 = reg2
-
-	case "and":
-		instr.OpCode = OpAnd
-		if len(args) < 2 {
-			return instr, fmt.Errorf("недостаточно аргументов для AND")
-		}
-		reg1, err := parseRegister(args[0])
-		if err != nil {
-			return instr, fmt.Errorf("неверный первый аргумент для AND: %v", err)
-		}
-		reg2, err := parseRegister(args[1])
-		if err != nil {
-			return instr, fmt.Errorf("неверный второй аргумент для AND: %v", err)
-		}
-		instr.Reg1 = reg1
-		instr.Reg2 = reg2
-
-	case "or":
-		instr.OpCode = OpOr
-		if len(args) < 2 {
-			return instr, fmt.Errorf("недостаточно аргументов для OR")
-		}
-		reg1, err := parseRegister(args[0])
-		if err != nil {
-			return instr, fmt.Errorf("неверный первый аргумент для OR: %v", err)
-		}
-		reg2, err := parseRegister(args[1])
-		if err != nil {
-			return instr, fmt.Errorf("неверный второй аргумент для OR: %v", err)
-		}
-		instr.Reg1 = reg1
-		instr.Reg2 = reg2
-
-	case "xor":
-		instr.OpCode = OpXor
-		if len(args) < 2 {
-			return instr, fmt.Errorf("недостаточно аргументов для XOR")
-		}
-		reg1, err := parseRegister(args[0])
-		if err != nil {
-			return instr, fmt.Errorf("неверный первый аргумент для XOR: %v", err)
-		}
-		reg2, err := parseRegister(args[1])
-		if err != nil {
-			return instr, fmt.Errorf("неверный второй аргумент для XOR: %v", err)
-		}
-		instr.Reg1 = reg1
-		instr.Reg2 = reg2
-
+		return instr, nil
 	case "cmp":
 		instr.OpCode = OpCmp
 		if len(args) < 2 {
@@ -1154,12 +1321,33 @@ func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
 		if err != nil {
 			return instr, fmt.Errorf("неверный первый аргумент для CMP: %v", err)
 		}
-		reg2, err := parseRegister(args[1])
-		if err != nil {
-			return instr, fmt.Errorf("неверный второй аргумент для CMP: %v", err)
-		}
 		instr.Reg1 = reg1
-		instr.Reg2 = reg2
+		if strings.HasPrefix(args[1], "[") {
+			addrStr := strings.Trim(args[1], "[]")
+			if reg, err := parseRegister(addrStr); err == nil {
+				instr.Reg2 = reg
+				instr.IsMemSrc = true
+			} else if addr, err := parseAddress(addrStr); err == nil {
+				instr.Imm = intTo4Bits(addr)
+				instr.IsMemSrc = true
+			} else {
+				return instr, fmt.Errorf("неверный адрес памяти: %s", args[1])
+			}
+		} else if strings.HasPrefix(args[1], "r") {
+			reg2, err := parseRegister(args[1])
+			if err != nil {
+				return instr, fmt.Errorf("неверный второй аргумент для CMP: %v", err)
+			}
+			instr.Reg2 = reg2
+		} else {
+			bits, err := parseImmediate(args[1], false)
+			if err != nil {
+				return instr, fmt.Errorf("неверное immediate-значение: %v", err)
+			}
+			instr.Imm = bits
+			instr.Reg2 = -1
+		}
+		return instr, nil
 
 	case "jz":
 		instr.OpCode = OpJz
@@ -1260,6 +1448,14 @@ func convertTextToInstruction(cmd string, args []string) (Instruction, error) {
 		} else {
 			instr.Label = args[0]
 		}
+	case "ret":
+		instr.OpCode = OpRet
+		if len(args) > 0 {
+			return instr, fmt.Errorf("команда ret не принимает аргументов")
+		}
+		instr.Reg1 = -1
+		instr.Reg2 = -1
+		instr.Imm = [4]bool{false, false, false, false}
 	case "run":
 		instr.OpCode = -1
 		if len(args) > 0 {
@@ -1518,6 +1714,8 @@ func (c *Command) String() string {
 		OpRet:   "ret",
 		-4:      "mem",
 		-2:      "step",
+		-3:      "save",
+		-5:      "loadf",
 	}
 	if name, ok := opCodeNames[c.OpCode]; ok {
 		return name
