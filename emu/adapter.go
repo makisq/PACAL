@@ -29,6 +29,10 @@ func (cpu *CPUContext) adaptToInstructionExecutor(cmd string, args []string) err
 			return cpu.executeJump(instr)
 		case OpMov:
 			return cpu.executeMov(instr)
+		case OpMem:
+			return cpu.executeCommand(fmt.Sprintf("mem %d", instr.MemAddr))
+		case OpMemRange:
+			return cpu.executeCommand(fmt.Sprintf("mem range %d %d", instr.MemAddr, instr.Reg1))
 		case OpRet:
 			return cpu.executeRet(instr)
 		default:
@@ -65,6 +69,8 @@ func (cpu *CPUContext) adaptToTextExecutor(instr Instruction) error {
 	case OpAnd:
 		cmd = "and"
 		args = []string{fmt.Sprintf("r%d", instr.Reg1), fmt.Sprintf("r%d", instr.Reg2)}
+	case OpMem:
+		return cpu.executeCommand(fmt.Sprintf("mem %d", instr.MemAddr))
 	case OpOr:
 		cmd = "or"
 		args = []string{fmt.Sprintf("r%d", instr.Reg1), fmt.Sprintf("r%d", instr.Reg2)}
@@ -80,6 +86,8 @@ func (cpu *CPUContext) adaptToTextExecutor(instr Instruction) error {
 	case OpStore:
 		cmd = "store"
 		args = []string{fmt.Sprintf("[r%d]", instr.Reg1), fmt.Sprintf("r%d", instr.Reg2)}
+	case OpMemRange:
+		return cpu.executeCommand(fmt.Sprintf("mem_range %d %d", instr.MemAddr, instr.Reg1))
 	case OpJmp:
 		cmd = "jmp"
 		if instr.Label != "" {
