@@ -175,8 +175,8 @@ func initCommands() {
 			Help: "Просмотр содержимого диапазона памяти\n" +
 				"Формат: memrange <начало> <конец>\n" +
 				"Примеры:\n" +
-				"  mem_range 0x0A 0x0F  # Просмотр адресов от 0A до 0F в hex\n" +
-				"  mem_range 5 10      # Просмотр адресов от 5 до 10 в decimal",
+				"  memrange 0x0A 0x0F  # Просмотр адресов от 0A до 0F в hex\n" +
+				"  memrange 5 10      # Просмотр адресов от 5 до 10 в decimal",
 			Exec: MemRanges,
 		},
 
