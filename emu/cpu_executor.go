@@ -137,3 +137,66 @@ func (cpu *CPUContext) executeLoadf(instr Instruction) error {
 	}
 	return nil
 }
+
+func (cpu *CPUContext) executeMem(instr Instruction) error {
+	if instr.OpCode != OpMem {
+		return fmt.Errorf("ожидалась команда mem")
+	}
+
+	addr := instr.MemAddr
+	if addr < 0 || addr > 15 {
+		return fmt.Errorf("адрес памяти должен быть от 0 до 15")
+	}
+
+	data := cpu.bus.Read(intTo4Bits(addr))
+	value := bitsToInt(data)
+	asciiChar := " "
+	if value >= 32 && value <= 126 {
+		asciiChar = string(rune(value))
+	}
+
+	fmt.Printf("[%02X] %s | %3d | 0x%01X | %s\n",
+		addr,
+		bitsToStr(data),
+		value,
+		value,
+		asciiChar)
+	return nil
+}
+
+func (cpu *CPUContext) executeMemRanges(instr Instruction) error {
+	if instr.OpCode != OpMemRange {
+		return fmt.Errorf("ожидалась команда mem_range, получен код %d", instr.OpCode)
+	}
+
+	start := instr.MemAddr
+	end := instr.Reg1
+	if start < 0 || start > 15 || end < 0 || end > 15 {
+		return fmt.Errorf("адреса должны быть в диапазоне 0-15")
+	}
+
+	if start > end {
+		return fmt.Errorf("начальный адрес (%d) должен быть меньше конечного (%d)", start, end)
+	}
+	fmt.Println("Адрес | Бинарно | Десятично | Hex | Символ")
+	fmt.Println("----------------------------------------")
+
+	for addr := start; addr <= end; addr++ {
+		data := cpu.bus.Read(intTo4Bits(addr))
+		value := bitsToInt(data)
+
+		char := " "
+		if value >= 32 && value <= 126 {
+			char = string(rune(value))
+		}
+
+		fmt.Printf(" %02X  | %04b    | %3d      | %02X  | %s\n",
+			addr,
+			data,
+			value,
+			value,
+			char)
+	}
+
+	return nil
+}
