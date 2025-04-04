@@ -5,10 +5,24 @@ import (
 )
 
 func (cpu *CPUContext) executeALUOp(instr Instruction) error {
-	aBits := cpu.regFile.Read(instr.Reg1)
-	bBits := cpu.regFile.Read(instr.Reg2)
 
+	aBits := cpu.regFile.Read(instr.Reg1)
 	cpu.alu.aBits = aBits[:]
+	var bBits [4]bool
+	if instr.Reg2 >= 0 {
+		regBits := cpu.regFile.Read(instr.Reg2)
+		copy(bBits[:], regBits[:4])
+	} else if instr.Imm != [4]bool{} {
+		bBits = instr.Imm
+	} else if instr.IsMemSrc {
+		addrBits := cpu.regFile.Read(instr.Reg2)
+		var addr [4]bool
+		copy(addr[:], addrBits[:4])
+		bBits = cpu.bus.Read(addr)
+	} else {
+		return fmt.Errorf("invalid second operand")
+	}
+
 	cpu.alu.bBits = bBits[:]
 	cpu.alu.op = instr.OpCode
 
@@ -16,8 +30,9 @@ func (cpu *CPUContext) executeALUOp(instr Instruction) error {
 	if err != nil {
 		return err
 	}
-
-	cpu.regFile.Write(instr.Reg1, boolToByteSlice(result[:]))
+	if instr.OpCode != OpCmp {
+		cpu.regFile.Write(instr.Reg1, boolToByteSlice(result[:]))
+	}
 	cpu.alu.flags = flags
 
 	return nil
@@ -25,7 +40,6 @@ func (cpu *CPUContext) executeALUOp(instr Instruction) error {
 
 func (cpu *CPUContext) executeLoad(instr Instruction) error {
 	var addr [4]bool
-
 	if cpu.interfaceMode == 1 && instr.Address != [4]bool{} {
 		addr = instr.Address
 	} else {
@@ -40,18 +54,15 @@ func (cpu *CPUContext) executeLoad(instr Instruction) error {
 
 func (cpu *CPUContext) executeStore(instr Instruction) error {
 	var addr [4]bool
-	var data [4]bool
-
 	if cpu.interfaceMode == 1 && instr.Address != [4]bool{} {
-		// Pipeline режим
 		addr = instr.Address
 	} else {
-		// Shell режим
 		addrBits := cpu.regFile.Read(instr.Reg2)
 		copy(addr[:], addrBits[:4])
 	}
 
 	dataBits := cpu.regFile.Read(instr.Reg1)
+	var data [4]bool
 	copy(data[:], dataBits[:4])
 
 	cpu.bus.Write(addr, data, true)
@@ -104,5 +115,25 @@ func (cpu *CPUContext) executeHalt(instr Instruction) error {
 		cpu.logger.Println("CPU остановлен по команде HLT")
 	}
 	cpu.pipeline = Pipeline{}
+	return nil
+}
+
+func (cpu *CPUContext) executeSave(instr Instruction) error {
+	if instr.Filename == "" {
+		return fmt.Errorf("filename not specified for save")
+	}
+	if err := cpu.SaveState(instr.Filename); err != nil {
+		return fmt.Errorf("save failed: %v", err)
+	}
+	return nil
+}
+
+func (cpu *CPUContext) executeLoadf(instr Instruction) error {
+	if instr.Filename == "" {
+		return fmt.Errorf("filename not specified for loadf")
+	}
+	if err := cpu.LoadfProgram(instr.Filename); err != nil {
+		return fmt.Errorf("load failed: %v", err)
+	}
 	return nil
 }
