@@ -87,7 +87,7 @@ func (cpu *CPUContext) adaptToTextExecutor(instr Instruction) error {
 		cmd = "store"
 		args = []string{fmt.Sprintf("[r%d]", instr.Reg1), fmt.Sprintf("r%d", instr.Reg2)}
 	case OpMemRange:
-		return cpu.executeCommand(fmt.Sprintf("mem_range %d %d", instr.MemAddr, instr.Reg1))
+		return cpu.executeCommand(fmt.Sprintf("memrange %d %d", instr.MemAddr, instr.Reg1))
 	case OpJmp:
 		cmd = "jmp"
 		if instr.Label != "" {
