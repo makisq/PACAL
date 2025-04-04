@@ -1,5 +1,7 @@
 package main
 
+import "fmt"
+
 type Instruction struct {
 	OpCode    int
 	Reg1      int
@@ -11,6 +13,7 @@ type Instruction struct {
 	isMemDest bool
 	IsMemDest bool
 	IsMemSrc  bool
+	Filename  string
 }
 
 func DecodeInstruction(instr [4]bool) Instruction {
@@ -27,7 +30,11 @@ func DecodeInstruction(instr [4]bool) Instruction {
 		decoded.Reg1 = boolToInt(instr[2])
 		decoded.Reg2 = -1
 		return decoded
-
+	case OpRet:
+		decoded.OpCode = OpRet
+		decoded.Reg1 = -1
+		decoded.Reg2 = -1
+		return decoded
 	case OpMov:
 		if instr[0] {
 			decoded.Imm = [4]bool{instr[1], instr[2], instr[3], false}
@@ -37,6 +44,15 @@ func DecodeInstruction(instr [4]bool) Instruction {
 			decoded.Reg2 = boolToInt(instr[2])
 		}
 		return decoded
+	case -3:
+		filenameLen := boolToInt(instr[1])<<2 | boolToInt(instr[2])<<1 | boolToInt(instr[3])
+		decoded.Filename = fmt.Sprintf("file%d.bin", filenameLen)
+		return Instruction{OpCode: -3}
+
+	case -5:
+		filenameLen := boolToInt(instr[1])<<2 | boolToInt(instr[2])<<1 | boolToInt(instr[3])
+		decoded.Filename = fmt.Sprintf("file%d.bin", filenameLen)
+		return Instruction{OpCode: -5}
 
 	case OpLoad, OpStore:
 		decoded.Reg1 = boolToInt(instr[1])
