@@ -44,6 +44,7 @@ func helpCommand(cpu *CPUContext, _ []string) error {
 	printCommandHelp("load")
 	printCommandHelp("store")
 	printCommandHelp("mem")
+	printCommandHelp("mem_range")
 
 	fmt.Println("\nУправление потоком:")
 	printCommandHelp("jmp")
@@ -168,6 +169,18 @@ func initCommands() {
 			Exec:     jnzCommand,
 		},
 		{
+			Name:     "mem_range",
+			OpCode:   OpMemRange,
+			Operands: 2,
+			Help: "Просмотр содержимого диапазона памяти\n" +
+				"Формат: mem range <начало> <конец>\n" +
+				"Примеры:\n" +
+				"  mem_range 0x0A 0x0F  # Просмотр адресов от 0A до 0F в hex\n" +
+				"  mem_range 5 10      # Просмотр адресов от 5 до 10 в decimal",
+			Exec: MemRanges,
+		},
+
+		{
 			Name:     "jc",
 			OpCode:   OpJc,
 			Operands: 1,
@@ -210,7 +223,7 @@ func initCommands() {
 			Exec:     runCommand,
 		},
 		{
-			Name:     "step",
+			Name:     "step(временно недоступна в pipe. Доступна только в shell)",
 			OpCode:   -1,
 			Operands: 0,
 			Help:     "step - выполнить одну инструкцию",
@@ -245,7 +258,7 @@ func initCommands() {
 			Exec:     helpCommand,
 		},
 		{
-			Name:     "perf",
+			Name:     "perf(доступна только в shell режиме. Но обрабатывает запросы и pipe)",
 			OpCode:   -1,
 			Operands: 0,
 			Help:     "perf - показать статистику производительности",
@@ -309,9 +322,20 @@ func genALUCommand(op int) func(cpu *CPUContext, args []string) error {
 	}
 }
 
+func showProgress(total, current int) {
+	width := 50
+	percent := float64(current) / float64(total)
+	filled := int(float64(width) * percent)
+
+	fmt.Printf("\r[%-*s] %3.0f%%",
+		width,
+		strings.Repeat("=", filled)+">",
+		percent*100)
+}
+
 func movCommand(cpu *CPUContext, args []string) error {
 
-	reg, err := parseRegister(args[0])
+	reg, err := parseAddress(args[1])
 	if err != nil {
 		return fmt.Errorf("неверный номер регистра: %v", err)
 	}
@@ -368,7 +392,7 @@ func executeJumpCommand(cpu *CPUContext, args []string) error {
 	if strings.HasPrefix(args[0], "r") {
 		reg, err := parseRegister(args[0])
 		if err != nil {
-			return fmt.Errorf("неверный регистр: %v", err)
+			return fmt.Errorf("неверный аргумент: %s (ожидается регистр, адрес или метка)", args[0])
 		}
 
 		target := cpu.regFile.Read(reg)
@@ -389,25 +413,13 @@ func executeJumpCommand(cpu *CPUContext, args []string) error {
 		}
 		return fmt.Errorf("неизвестная метка: %s", label)
 	}
-	if addr, err := parseAddress(args[0]); err == nil {
-		cpu.pc.Write(intTo4Bits(addr))
-		return nil
+	addr, err := parseAddress(args[1])
+	cpu.pc.Write(intTo4Bits(addr))
+	if err != nil {
+		return fmt.Errorf("неверный адрес памяти: %v", err)
 	}
 
 	return fmt.Errorf("неверный аргумент: %s (ожидается регистр, адрес или метка)", args[0])
-}
-func jzCommand(cpu *CPUContext, args []string) error {
-	if !cpu.alu.flags.zero {
-		return nil
-	}
-	return executeJumpCommand(cpu, args)
-}
-
-func jnzCommand(cpu *CPUContext, args []string) error {
-	if cpu.alu.flags.zero {
-		return nil
-	}
-	return executeJumpCommand(cpu, args)
 }
 
 func jcCommand(cpu *CPUContext, args []string) error {
@@ -417,8 +429,15 @@ func jcCommand(cpu *CPUContext, args []string) error {
 	return executeJumpCommand(cpu, args)
 }
 
+func jzCommand(cpu *CPUContext, args []string) error {
+	if !cpu.alu.flags.zero {
+		return nil
+	}
+	return executeJumpCommand(cpu, args)
+}
+
 func storeCommand(cpu *CPUContext, args []string) error {
-	addr, err := parseAddress(args[0])
+	addr, err := parseAddress(args[1])
 	if err != nil {
 		return fmt.Errorf("неверный адрес памяти: %v", err)
 	}
@@ -439,9 +458,10 @@ func storeCommand(cpu *CPUContext, args []string) error {
 }
 
 func jmpCommand(cpu *CPUContext, args []string) error {
-	addr, err := parseAddress(args[0])
+
+	addr, err := parseAddress(args[1])
 	if err != nil {
-		return fmt.Errorf("неверный адрес перехода: %v", err)
+		return fmt.Errorf("неверный адрес в регистре R%d", addr)
 	}
 	//cpu.mu.Lock()
 	//defer cpu.mu.Unlock()
@@ -461,6 +481,13 @@ func saveCommand(cpu *CPUContext, args []string) error {
 		return fmt.Errorf("использование: save <filename>")
 	}
 	return cpu.SaveState(args[0])
+}
+
+func jnzCommand(cpu *CPUContext, args []string) error {
+	if cpu.alu.flags.zero {
+		return nil
+	}
+	return executeJumpCommand(cpu, args)
 }
 
 func loadfCommand(cpu *CPUContext, args []string) error {
@@ -488,11 +515,11 @@ func regsCommand(cpu *CPUContext, _ []string) error {
 }
 
 func memCommand(cpu *CPUContext, args []string) error {
-	addr, err := parseAddress(args[0])
+
+	addr, err := parseAddress(args[1])
 	if err != nil {
 		return fmt.Errorf("неверный адрес памяти: %v", err)
 	}
-
 	data := cpu.bus.Read(intTo4Bits(addr))
 	fmt.Printf("Память по адресу %02X: %s\n", addr, bitsToStr(data))
 	return nil
@@ -545,22 +572,37 @@ func parseRegister(arg string) (int, error) {
 }
 
 func parseAddress(arg string) (int, error) {
+	arg = strings.TrimSpace(arg)
 	if strings.HasPrefix(arg, "[") && strings.HasSuffix(arg, "]") {
-		return parseRegister(arg[1 : len(arg)-1])
+		regStr := arg[1 : len(arg)-1]
+		reg, err := parseRegister(regStr)
+		if err != nil {
+			return -1, fmt.Errorf("неверный формат регистра в адресе [%s]: %v", regStr, err)
+		}
+		return reg, nil
 	}
-	return -1, fmt.Errorf("ожидается адрес в формате [rX], получено: %s", arg)
-}
-func showProgress(total, current int) {
-	width := 50
-	percent := float64(current) / float64(total)
-	filled := int(float64(width) * percent)
+	var num int64
+	var err error
 
-	fmt.Printf("\r[%-*s] %3.0f%%",
-		width,
-		strings.Repeat("=", filled)+">",
-		percent*100)
-}
+	switch {
+	case strings.HasPrefix(arg, "0x"):
+		num, err = strconv.ParseInt(arg[2:], 16, 8)
+	case strings.HasPrefix(arg, "0b"):
+		num, err = strconv.ParseInt(arg[2:], 2, 8)
+	default:
+		num, err = strconv.ParseInt(arg, 10, 8)
+	}
 
+	if err != nil {
+		return -1, fmt.Errorf("неверный формат адреса: %s. Ожидается: [rX], 0x0F, 0b1010 или число 0-15", arg)
+	}
+
+	if num < 0 || num > 15 {
+		return -1, fmt.Errorf("адрес должен быть от 0 до 15")
+	}
+
+	return int(num), nil
+}
 func CommandShell(cpu *CPUContext) {
 	initCommands()
 	cpu.terminal.cpu = cpu
@@ -713,9 +755,10 @@ func callCommand(cpu *CPUContext, args []string) error {
 	nextPC := increment4Bit(currentPC)
 	cpu.regFile.Write(3, boolToByteSlice(nextPC[:]))
 	if strings.HasPrefix(args[0], "r") {
-		reg, err := parseRegister(args[0])
+
+		reg, err := parseAddress(args[1])
 		if err != nil {
-			return err
+			return fmt.Errorf("неверный адрес памяти: %v", err)
 		}
 		target := cpu.regFile.Read(reg)
 		var targetAddr [4]bool
@@ -737,5 +780,53 @@ func retCommand(cpu *CPUContext, _ []string) error {
 	var addr [4]bool
 	copy(addr[:], returnAddr[:4])
 	cpu.pc.Write(addr)
+	return nil
+}
+
+func MemRanges(cpu *CPUContext, args []string) error {
+	// Проверка количества аргументов с подробным сообщением
+	if len(args) < 2 {
+		return fmt.Errorf("неверное количество аргументов (%d). Используйте:\n"+
+			"  mem <адрес>        - просмотр одного адреса\n"+
+			"  mem <начало> <конец> - просмотр диапазона", len(args))
+	}
+
+	// Парсинг адресов с защитой от паники
+	start, err := parseAddress(args[0])
+	if err != nil {
+		return fmt.Errorf("ошибка начального адреса '%s': %v\nДопустимые форматы: [rX], 0x0F, 0b1010, 10", args[0], err)
+	}
+
+	end, err := parseAddress(args[1])
+	if err != nil {
+		return fmt.Errorf("ошибка конечного адреса '%s': %v\nДопустимые форматы: [rX], 0x0F, 0b1010, 10", args[1], err)
+	}
+
+	// Проверка диапазонов с hex-выводом
+	if start < 0 || start > 15 || end < 0 || end > 15 {
+		return fmt.Errorf("адреса должны быть в диапазоне 0-15 (0x0-0xF)\n"+
+			"Получено: начало=0x%X, конец=0x%X", start, end)
+	}
+
+	if start > end {
+		return fmt.Errorf("неверный диапазон: начальный адрес (0x%X) должен быть меньше конечного (0x%X)", start, end)
+	}
+
+	// Вывод таблицы с выравниванием
+	fmt.Println(" Адрес | Бинарно | Дес. | Hex | Символ")
+	fmt.Println("-------------------------------------")
+
+	for addr := start; addr <= end; addr++ {
+		data := cpu.bus.Read(intTo4Bits(addr))
+		value := bitsToInt(data)
+		char := " "
+		if value >= 32 && value <= 126 {
+			char = string(rune(value))
+		}
+
+		fmt.Printf(" 0x%02X | %04b    | %3d | %02X  | %s\n",
+			addr, data, value, value, char)
+	}
+
 	return nil
 }
