@@ -23,6 +23,8 @@ func main() {
 
 	fmt.Printf("Эмулятор процессора v%s (commit %s, built %s)\n", version, commit, date)
 	fmt.Printf("Тактовая частота: %v, Режим отладки: %v\n", *clockSpeed, *debugMode)
+	fmt.Println("Добр пожаловать в эмулятор 'Emu4'!")
+	fmt.Println("CPUx4 ")
 	cpu := InitializeCPU()
 	err := cpu.LoadProgram("start:\nmov r0, 5\nhlt")
 	if err != nil {
