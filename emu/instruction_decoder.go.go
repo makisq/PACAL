@@ -3,18 +3,20 @@ package main
 import "fmt"
 
 type Instruction struct {
-	OpCode    int
-	Reg1      int
-	Reg2      int
-	Imm       [4]bool
-	Label     string
-	Address   [4]bool
-	isImm     [4]bool
-	isMemDest bool
-	IsMemDest bool
-	IsMemSrc  bool
-	Filename  string
-	MemAddr   int
+	OpCode     int
+	Reg1       int
+	Reg2       int
+	Imm        [4]bool
+	Label      string
+	Address    [4]bool
+	isImm      [4]bool
+	isMemDest  bool
+	IsMemDest  bool
+	IsMemSrc   bool
+	Filename   string
+	MemAddr    int
+	IsRegStart bool
+	IsRegEnd   bool
 }
 
 func DecodeInstruction(instr [4]bool) Instruction {
