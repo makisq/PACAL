@@ -2,27 +2,98 @@ syntax = "proto3";
 
 package core;
 
-service CommandModule {
-  rpc GetCommands(Empty) returns (CommandsResponse);
-  rpc Init(Config) returns (Empty);
-  rpc Name(Empty) returns (NameResponse);
-  rpc Version(Empty) returns (VersionResponse);
+option go_package = "github.com/makisq/PACAL/octochan/core";
+
+message Flag {
+    string name = 1;
+    string shorthand = 2;
+    string usage = 3;
+    string def_value = 4;
+    bool changed = 5;
+    string type = 6;  // Supported types: "bool", "int", "int32", "int64", 
+                     // "float32", "float64", "string", "stringSlice", 
+                     // "stringArray", "duration", "bytes", "count"
+}
+
+message FParseErrWhitelist {
+    bool unknown_flags = 1;
+}
+
+message Command {
+    // Basic command fields
+    string use = 1;
+    string short = 2;
+    string long = 3;
+    string example = 4;
+    repeated string valid_args = 5;
+    bool valid_args_function = 6;
+    bool args = 7;
+    repeated string arg_aliases = 8;
+    string bash_completion_function = 9;
+    string deprecated = 10;
+    bool hidden = 11;
+    map<string, string> annotations = 12;
+    string version = 13;
+    
+    // Flags
+    bool persistent_flag_set = 14;
+    bool local_flag_set = 15;
+    repeated Flag flags = 16;
+    repeated Flag persistent_flags = 17;
+    
+    // Execution functions
+    bool run_function = 18;
+    bool pre_run_function = 19;
+    bool post_run_function = 20;
+    bool persistent_pre_run_function = 21;
+    bool persistent_post_run_function = 22;
+    
+    // Additional parameters
+    repeated string aliases = 23;
+    bool silence_errors = 24;
+    bool silence_usage = 25;
+    bool traverse_children = 26;
+    FParseErrWhitelist fparse_err_whitelist = 27;
+    
+    // Subcommands
+    repeated Command commands = 28;
+}
+
+message CommandsResponse {
+    repeated Command commands = 1;
 }
 
 message Empty {}
 
-message CommandsResponse {
-  repeated bytes commands = 1; // Сериализованные cobra.Command
-}
-
 message Config {
-  map<string, string> values = 1;
+    map<string, string> values = 1;
 }
 
 message NameResponse {
-  string name = 1;
+    string name = 1;
 }
 
 message VersionResponse {
-  string version = 1;
+    string version = 1;
+}
+
+message CommandRequest {
+    string name = 1;
+    repeated string args = 2;
+    map<string, string> flags = 3;
+}
+
+service CommandModule {
+    // Command management
+    rpc GetCommands(Empty) returns (CommandsResponse);
+    rpc RunCommand(CommandRequest) returns (Empty);
+    rpc PreRunCommand(CommandRequest) returns (Empty);
+    rpc PostRunCommand(CommandRequest) returns (Empty);
+    rpc PersistentPreRunCommand(CommandRequest) returns (Empty);
+    rpc PersistentPostRunCommand(CommandRequest) returns (Empty);
+    
+    // Plugin management
+    rpc Init(Config) returns (Empty);
+    rpc Name(Empty) returns (NameResponse);
+    rpc Version(Empty) returns (VersionResponse);
 }

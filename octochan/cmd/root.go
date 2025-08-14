@@ -17,19 +17,6 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-func init() {
-	rootCmd.SilenceErrors = true
-	rootCmd.SilenceUsage = true
-
-	rootCmd.AddCommand(diffCmd)
-	rootCmd.AddCommand(validateCmd)
-	rootCmd.AddCommand(findCmd)
-	rootCmd.AddCommand(patchCmd)
-	rootCmd.AddCommand(statsCmd)
-	rootCmd.SetHelpCommand(helpCmd)
-	rootCmd.AddCommand(helpCmd)
-}
-
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Printf("Error: %v\n", err)
