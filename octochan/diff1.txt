@@ -1,0 +1,38 @@
+Comparison report: prod.conf vs test.conf
+Generated at: 2025-05-26 17:03:31
+
+Parameter                                          | prod.conf                      | test.conf                      | Status         
+-----------------------------------------------------------------------------------------------------------------------------
+archive_command                                    | /usr/pangolin-6.1.10/bin/pg_probackup archive-push -B /pgarclogs/06  --instance cluster_pprb --wal-file-path=%p --wal-file-name=%f --compress --overwrite -j 4 --batch-size=100 | /usr/pangolin-6.1.10/bin/pg_probackup archive-push -B /pgarclogs/06 --instance pprb_prom-v8g92c --wal-file-path=%p --wal-file-name=%f --compress --overwrite -j 4 --batch-size=100 | Modified       
+archive_mode                                       | off                            | always                         | Modified       
+archive_timeout                                    | 3min                           | 180                            | Modified       
+auth_activity_period                               | 1min                           | 60                             | Modified       
+checkpoint_completion_target                       | 0.8                            | 0.5                            | Modified       
+cron.database_name                                 | dbccalt2                       | dbcca_3                        | Modified       
+enable_filesystem_checker                          | on                             | off                            | Modified       
+force_failover_timeout                             | 95                             | 66                             | Modified       
+installer.cluster_type                             | standalone-postgresql-pgbouncer | cluster-patroni-etcd-pgbouncer | Modified       
+log_directory                                      | /pgerrorlogs/tvldd-pprb07366   | /pgerrorlogs/pvlod-pprb05342   | Modified       
+max_connections                                    | 800                            | 300                            | Modified       
+max_wal_size                                       | 16GB                           | 8GB                            | Modified       
+min_wal_size                                       | 4GB                            | 2GB                            | Modified       
+monitoring_ldap_servers                            | ^delta.sbrf.ru$                | ^omega.sbrf.ru$                | Modified       
+performance_insights.sampling_period               | 5s                             | 5000                           | Modified       
+random_page_cost                                   | 2                              | 2.0                            | Modified       
+wal_keep_size                                      | 32GB                           | 8GB                            | Modified       
+work_mem                                           | 88MB                           | 32768kB                        | Modified       
+autovacuum_vacuum_scale_factor                     | 0.2                            | N/A                            | Only in prod.conf
+fastpath_num_locks                                 | 32                             | N/A                            | Only in prod.conf
+idle_in_transaction_session_timeout                | 300000ms                       | N/A                            | Only in prod.conf
+log2_num_lock_partitions                           | 4                              | N/A                            | Only in prod.conf
+lwlock_shared_limit                                | 0                              | N/A                            | Only in prod.conf
+max_client_sessions                                | 300                            | N/A                            | Only in prod.conf
+max_parallel_maintenance_workers                   | 2                              | N/A                            | Only in prod.conf
+max_pred_locks_per_transaction                     | 64                             | N/A                            | Only in prod.conf
+temp_buffers                                       | 8MB                            | N/A                            | Only in prod.conf
+track_activity_query_size                          | 1kB                            | N/A                            | Only in prod.conf
+cluster_name                                       | N/A                            | pprb_prom-v8g92c               | Only in test.conf
+primary_conninfo                                   | N/A                            | user=patroni host=pvlod-pprb05343.omega.sbrf.ru port=5433 sslmode=prefer application_name=pvlod-pprb05342.omega.sbrf.ru gssencmode=prefer channel_binding=prefer | Only in test.conf
+primary_slot_name                                  | N/A                            | pvlod_pprb05342_omega_sbrf_ru  | Only in test.conf
+recovery_target_timeline                           | N/A                            | latest                         | Only in test.conf
+synchronous_standby_names                          | N/A                            | pvlod-pprb05343.omega.sbrf.ru  | Only in test.conf

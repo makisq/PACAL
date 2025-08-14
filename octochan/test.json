@@ -1,0 +1,19 @@
+{
+  "service": "psqlse_tuningpgbouncer",
+  "parameters": {
+    "role": "standalone",
+    "version": "6.5.1",
+    "max_client_conn": 901,
+    "skip_sm_conflicts": false
+  },
+  "targets": [
+    {
+      "svm_ci": ["CI08452276", "CI08453376"]
+    }
+  ],
+  "items": [
+    {
+      "table_id": "psqlseclusterstandalone"
+    }
+  ]
+}

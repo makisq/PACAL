@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package core;
+
+service CommandModule {
+  rpc GetCommands(Empty) returns (CommandsResponse);
+  rpc Init(Config) returns (Empty);
+  rpc Name(Empty) returns (NameResponse);
+  rpc Version(Empty) returns (VersionResponse);
+}
+
+message Empty {}
+
+message CommandsResponse {
+  repeated bytes commands = 1; // Сериализованные cobra.Command
+}
+
+message Config {
+  map<string, string> values = 1;
+}
+
+message NameResponse {
+  string name = 1;
+}
+
+message VersionResponse {
+  string version = 1;
+}
