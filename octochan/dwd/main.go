@@ -17,7 +17,6 @@ import (
 type TestModule struct{}
 
 func (t *TestModule) GetCommands() []*cobra.Command {
-	// Основная команда test
 	testCmd := &cobra.Command{
 		Use:   "test",
 		Short: "Test command from module",
@@ -30,10 +29,8 @@ func (t *TestModule) GetCommands() []*cobra.Command {
 		},
 	}
 
-	// Добавляем флаг debug к основной команде
 	testCmd.Flags().BoolP("debug", "d", false, "Enable debug mode")
 
-	// Подкоманда generate
 	generateCmd := &cobra.Command{
 		Use:   "generate",
 		Short: "Generate test data",
@@ -46,10 +43,8 @@ func (t *TestModule) GetCommands() []*cobra.Command {
 		},
 	}
 
-	// Добавляем флаг count к подкоманде generate
 	generateCmd.Flags().IntP("count", "n", 3, "Number of items to generate")
 
-	// Добавляем подкоманду к основной команде
 	testCmd.AddCommand(generateCmd)
 
 	return []*cobra.Command{testCmd}
@@ -102,7 +97,6 @@ func (s *CommandGRPCServer) GetCommands(ctx context.Context, req *core.Empty) (*
 			Flags:       pbFlags,
 		}
 
-		// Обрабатываем подкоманды
 		for _, subCmd := range cmd.Commands() {
 			var subPbFlags []*core.Flag
 			subCmd.Flags().VisitAll(func(flag *pflag.Flag) {
@@ -135,7 +129,6 @@ func (s *CommandGRPCServer) RunCommand(ctx context.Context, req *core.CommandReq
 	cmdPath := strings.Split(req.Name, " ")
 	commands := s.Impl.GetCommands()
 
-	// Находим нужную команду
 	var targetCmd *cobra.Command
 	for _, cmd := range commands {
 		if cmd.Use == cmdPath[0] {
@@ -153,14 +146,12 @@ func (s *CommandGRPCServer) RunCommand(ctx context.Context, req *core.CommandReq
 	}
 
 	if targetCmd != nil && targetCmd.Run != nil {
-		// Устанавливаем флаги
 		for name, value := range req.Flags {
 			if err := targetCmd.Flags().Set(name, value); err != nil {
 				return nil, fmt.Errorf("failed to set flag %s: %v", name, err)
 			}
 		}
 
-		// Выполняем команду
 		targetCmd.Run(targetCmd, req.Args)
 	}
 
