@@ -71,7 +71,6 @@ func (s *CommandGRPCServer) GetCommands(ctx context.Context, req *Empty) (*Comma
 			})
 		}
 
-		// Преобразуем аннотации
 		pbAnnotations := make(map[string]string)
 		if cmd.Annotations != nil {
 			for k, v := range cmd.Annotations {
@@ -79,15 +78,14 @@ func (s *CommandGRPCServer) GetCommands(ctx context.Context, req *Empty) (*Comma
 			}
 		}
 
-		// Собираем полную команду
 		pbCommands[i] = &Command{
 			Use:                       cmd.Use,
 			Short:                     cmd.Short,
 			Long:                      cmd.Long,
 			Example:                   cmd.Example,
 			ValidArgs:                 cmd.ValidArgs,
-			ValidArgsFunction:         cmd.ValidArgsFunction != nil, // Только маркер
-			Args:                      cmd.Args != nil,              // Только маркер
+			ValidArgsFunction:         cmd.ValidArgsFunction != nil,
+			Args:                      cmd.Args != nil,
 			ArgAliases:                cmd.ArgAliases,
 			BashCompletionFunction:    cmd.BashCompletionFunction,
 			Deprecated:                cmd.Deprecated,
@@ -154,7 +152,6 @@ func (c *CommandGRPCClient) CreateCommandsFromProto(pbCommands []*Command) []*co
 			},
 		}
 
-		// Обработка функций выполнения
 		if pbCmd.RunFunction {
 			cmd.Run = func(cmd *cobra.Command, args []string) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -197,7 +194,6 @@ func (c *CommandGRPCClient) CreateCommandsFromProto(pbCommands []*Command) []*co
 			}
 		}
 
-		// Обработка флагов команды
 		for _, pbFlag := range pbCmd.Flags {
 			switch {
 			case strings.Contains(pbFlag.Type, "bool"):
@@ -274,7 +270,6 @@ func (c *CommandGRPCClient) CreateCommandsFromProto(pbCommands []*Command) []*co
 				cmd.Flags().DurationP(pbFlag.Name, pbFlag.Shorthand, durVal, pbFlag.Usage)
 
 			case strings.Contains(pbFlag.Type, "time"):
-				// Обрабатываем как строку, парсинг будет при использовании
 				cmd.Flags().StringP(pbFlag.Name, pbFlag.Shorthand, pbFlag.DefValue, pbFlag.Usage)
 
 			case strings.Contains(pbFlag.Type, "bytes"):
@@ -286,7 +281,6 @@ func (c *CommandGRPCClient) CreateCommandsFromProto(pbCommands []*Command) []*co
 				cmd.Flags().BytesHexP(pbFlag.Name, pbFlag.Shorthand, bytesVal, pbFlag.Usage)
 
 			case strings.Contains(pbFlag.Type, "count"):
-				// CountP принимает только имя, сокращение и описание
 				cmd.Flags().CountP(pbFlag.Name, pbFlag.Shorthand, pbFlag.Usage)
 
 			case strings.Contains(pbFlag.Type, "string"):
@@ -298,8 +292,6 @@ func (c *CommandGRPCClient) CreateCommandsFromProto(pbCommands []*Command) []*co
 			}
 		}
 
-		// Обработка persistent флагов
-		// Обработка persistent флагов (аналогично обычным флагам)
 		for _, pbFlag := range pbCmd.PersistentFlags {
 			switch {
 			case strings.Contains(pbFlag.Type, "bool"):
@@ -364,7 +356,7 @@ func (c *CommandGRPCClient) CreateCommandsFromProto(pbCommands []*Command) []*co
 		}
 
 		if len(pbCmd.Commands) > 0 {
-			subCommands := c.CreateCommandsFromProto(pbCmd.Commands) // Исправлено на CreateCommandsFromProto
+			subCommands := c.CreateCommandsFromProto(pbCmd.Commands)
 			for _, subCmd := range subCommands {
 				cmd.AddCommand(subCmd)
 			}
