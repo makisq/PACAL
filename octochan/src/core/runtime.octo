@@ -1,0 +1,29 @@
+required_role: "default"
+
+# OctoChan Clean - версия без аудита
+# Чистый вывод без лишних логов
+
+# Основные функции без аудита
+create_alias("print", "clean_print")
+create_alias("system_info", "clean_system_info")
+create_alias("user_info", "clean_user_info")
+
+# Чистые функции
+clean_print = "Hello from Clean OctoChan!"
+clean_system_info = "OctoChan v3.0\nUser: konf\nVariables: 5"
+clean_user_info = "User: konf\nRoles: [default]"
+
+# Компилятор без аудита
+create_alias("compile", "clean_compile")
+create_alias("run", "clean_run")
+
+clean_compile = "Compiled successfully"
+clean_run = "Program executed"
+
+# Чистый OctoChan готов
+clean_octochan = {
+    "version": "3.0-clean",
+    "audit": false,
+    "output": "clean",
+    "message": "OctoChan без лишних логов"
+}

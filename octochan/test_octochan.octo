@@ -1,0 +1,20 @@
+required_role: "default"
+
+# OctoChan test file with syntax highlighting
+name = "OctoChan"
+version = 3
+
+# Function call
+info = system_info()
+
+# Pipeline
+result = $info |> filter("version") |> print()
+
+# Conditional
+if $version >= 3 {
+    print("Modern OctoChan!")
+}
+
+# Alias
+create_alias("hello", "print")
+hello("Hello from VS Code!")

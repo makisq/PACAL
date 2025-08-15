@@ -1,0 +1,26 @@
+required_role: "default"
+
+# OctoChan Core - написан на OctoChan
+# Основной движок языка
+
+# Базовые функции
+create_alias("print", "output_message")
+create_alias("system_info", "get_system_data")
+create_alias("user_info", "get_user_data")
+
+# Функция print
+output_message = "OctoChan v3.0 - Self-Hosting Language"
+
+# Системная информация
+get_system_data = "OctoChan v3.0\nUser: konf\nVariables: 5\nRoles: [default]"
+
+# Информация о пользователе
+get_user_data = "User: konf\nRoles: [default]\nPermissions: *"
+
+# Основной движок
+octochan_engine = {
+    "version": "3.0",
+    "language": "octochan",
+    "self_hosted": true,
+    "core_functions": ["print", "system_info", "user_info"]
+}

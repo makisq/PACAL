@@ -1,0 +1,31 @@
+required_role: "default"
+
+# OctoChan Parser - written in OctoChan
+# Builds Abstract Syntax Tree from tokens
+
+# AST node types
+NODE_PROGRAM = "PROGRAM"
+NODE_ASSIGNMENT = "ASSIGNMENT"
+NODE_FUNCTION_CALL = "FUNCTION_CALL"
+NODE_PIPELINE = "PIPELINE"
+NODE_VARIABLE = "VARIABLE"
+
+# Parser functions
+create_alias("parse_expression", "system_info")
+create_alias("parse_statement", "user_info")
+create_alias("build_node", "apply_diff")
+
+# Parsing pipeline
+tokens = "system_info() |> filter(version)"
+ast = $tokens |>
+    parse_expression() |>
+    parse_statement() |>
+    build_node()
+
+# AST structure
+syntax_tree = "AST_PIPELINE_NODE"
+
+parser_result = {
+    "ast": $syntax_tree,
+    "status": "parsed"
+}

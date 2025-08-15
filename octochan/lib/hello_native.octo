@@ -1,0 +1,5 @@
+required_role: "default"
+
+# Native compilation test
+print("Hello from OctoChan native!")
+exit(0)

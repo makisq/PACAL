@@ -1,0 +1,60 @@
+required_role: "default"
+
+# OctoChan Typing System Demo
+
+# ============================================================================
+# ТЕКУЩАЯ СИСТЕМА (динамическая типизация)
+# ============================================================================
+
+# Переменные без типов
+name = "OctoChan"
+version = 3
+active = true
+servers = ["web1", "web2", "web3"]
+
+# Функции без проверки типов
+result = system_info()
+config = apply_diff("config.yaml")
+
+# ============================================================================
+# ПРЕДЛАГАЕМАЯ СИСТЕМА (опциональная статическая типизация)
+# ============================================================================
+
+# Переменные с типами (опционально)
+app_name: string = "OctoChan"
+app_version: number = 3
+is_active: boolean = true
+server_list: Array<string> = ["web1", "web2", "web3"]
+
+# Типизированные объекты
+server_config: {
+    name: string,
+    port: number,
+    ssl: boolean
+} = {
+    "name": "web-server",
+    "port": 8080,
+    "ssl": true
+}
+
+# Типизированные функции
+func deploy_app(app: string, env: string) -> boolean {
+    if has_permission("deploy") {
+        result = apply_diff($app + "-" + $env + ".yaml")
+        return $result.success
+    }
+    return false
+}
+
+# Типизированные конвейеры
+version_info: string = system_info() |> filter("version") |> print()
+
+# Автовывод типов
+user_data = user_info()  # автоматически: UserInfo
+current_time = now()     # автоматически: DateTime
+
+typing_demo = {
+    "current": "dynamic",
+    "proposed": "optional_static",
+    "benefits": ["safety", "performance", "ide_support"]
+}

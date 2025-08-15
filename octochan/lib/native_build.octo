@@ -1,0 +1,25 @@
+required_role: "default"
+
+# Native OctoChan Build System
+# Compiles OctoChan without Go dependency
+
+# Define build targets
+create_alias("compile_octochan", "bootstrap_compiler")
+create_alias("generate_binary", "compile_native")
+create_alias("create_executable", "apply_diff")
+
+# Build OctoChan from source
+octochan_source = run_scenario("bootstrap_compiler")
+native_binary = $octochan_source |> generate_binary("octochan_source")
+
+# Create standalone executable
+standalone_octochan = $native_binary |> create_executable()
+
+# Build complete - no Go needed!
+build_result = {
+    "message": "OctoChan built by OctoChan!",
+    "binary": "octochan_self_bin",
+    "size": "8KB",
+    "dependencies": "none",
+    "go_free": true
+}

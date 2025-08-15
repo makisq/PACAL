@@ -1,0 +1,8 @@
+required_role: "default"
+
+# Test scenario
+result = system_info()
+user = user_info()
+
+# Pipeline test
+version = system_info() |> filter("version")

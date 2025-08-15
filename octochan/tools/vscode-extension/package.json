@@ -1,0 +1,26 @@
+{
+    "name": "octochan-language-support",
+    "displayName": "OctoChan Language Support",
+    "description": "Syntax highlighting and language support for OctoChan programming language",
+    "version": "1.0.0",
+    "publisher": "octochan",
+    "engines": {
+        "vscode": "^1.60.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [{
+            "id": "octochan",
+            "aliases": ["OctoChan", "octochan"],
+            "extensions": [".octo"],
+            "configuration": "./language-configuration.json"
+        }],
+        "grammars": [{
+            "language": "octochan",
+            "scopeName": "source.octochan",
+            "path": "./syntaxes/octochan.tmLanguage.json"
+        }]
+    }
+}

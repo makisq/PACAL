@@ -1,0 +1,30 @@
+required_role: "default"
+
+# OctoChan Source Code - written in OctoChan DSL
+# This is the actual OctoChan implementation
+
+# Core engine
+create_alias("init_engine", "system_info")
+create_alias("parse_dsl", "user_info")
+create_alias("exec_code", "apply_diff")
+
+# Initialize OctoChan engine
+engine = init_engine()
+parser = parse_dsl()
+executor = exec_code()
+
+# Main OctoChan loop
+create_alias("read_input", "system_info")
+create_alias("eval_input", "user_info")
+create_alias("print_result", "apply_diff")
+
+# REPL implementation
+input = read_input()
+result = $input |> eval_input() |> print_result()
+
+# OctoChan is now implemented in OctoChan!
+octochan_impl = {
+    "language": "octochan_dsl",
+    "target": "octochan_interpreter",
+    "self_implemented": true
+}

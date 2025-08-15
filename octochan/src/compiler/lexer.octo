@@ -1,0 +1,30 @@
+required_role: "default"
+
+# OctoChan Lexer - written in OctoChan
+# Tokenizes OctoChan source code
+
+# Token types
+TOKEN_IDENTIFIER = "IDENTIFIER"
+TOKEN_STRING = "STRING" 
+TOKEN_NUMBER = "NUMBER"
+TOKEN_OPERATOR = "OPERATOR"
+TOKEN_KEYWORD = "KEYWORD"
+
+# Lexical analysis
+create_alias("scan_tokens", "system_info")
+create_alias("classify_token", "user_info")
+create_alias("emit_token", "apply_diff")
+
+# Main lexer pipeline
+source_text = "system_info() |> filter(\"version\")"
+tokens = $source_text |>
+    scan_tokens() |>
+    classify_token() |>
+    emit_token()
+
+# Result: tokenized OctoChan code
+lexer_output = {
+    "tokens": $tokens,
+    "status": "lexed",
+    "language": "octochan"
+}

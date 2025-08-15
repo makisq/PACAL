@@ -1,0 +1,297 @@
+================================================================================
+                        OCTOCHAN LANGUAGE REFERENCE
+                              Version 3.0
+================================================================================
+
+OctoChan - самохостящийся язык программирования для автоматизации и системного
+администрирования. Компилируется в нативный машинный код.
+
+================================================================================
+БАЗОВЫЙ СИНТАКСИС
+================================================================================
+
+1. ПЕРЕМЕННЫЕ
+   name = "OctoChan"           # Строка
+   version = 3                 # Число
+   active = true               # Булево значение
+   result = $name              # Использование переменной
+
+2. ФУНКЦИИ
+   info = system_info()                    # Без параметров
+   user = check_permissions("alice")       # С параметрами
+   config = apply_diff("prod.yaml")        # Строковый параметр
+
+3. КОНВЕЙЕРЫ (PIPELINES)
+   # Простой конвейер
+   version = system_info() |> filter("version")
+   
+   # Сложный конвейер
+   result = apply_diff("config.yaml") |> 
+            filter("success") |> 
+            count()
+   
+   # Многоэтапный конвейер
+   deployment = load_config("prod") |>
+                validate() |>
+                deploy() |>
+                status()
+
+4. УСЛОВИЯ
+   # Простое условие
+   if has_permission("deploy") {
+       apply_diff("production.yaml")
+   }
+   
+   # Условие с else
+   if $status == "success" {
+       deploy("production")
+   } else {
+       escalate("admin")
+   }
+
+5. ОБЪЕКТЫ
+   config = {
+       "environment": "production",
+       "replicas": 3,
+       "timeout": "30s"
+   }
+   
+   # Доступ к полям
+   env = $config.environment
+
+6. МАССИВЫ
+   servers = ["web1", "web2", "web3"]
+   ports = [80, 443, 8080]
+   
+   # Обработка массива
+   active = $servers |> filter("active") |> count()
+
+================================================================================
+АЛИАСЫ
+================================================================================
+
+# Создание алиаса
+create_alias("info", "system_info")
+create_alias("deploy", "apply_diff")
+
+# Многоуровневые алиасы
+create_alias("full_deploy", "deploy")
+create_alias("prod_deploy", "full_deploy")
+
+# Использование
+info()                    # → system_info()
+prod_deploy("config")     # → full_deploy → deploy → apply_diff
+
+# Список алиасов
+aliases = list_aliases()
+
+================================================================================
+СИСТЕМА РОЛЕЙ И ПРАВ (RBAC)
+================================================================================
+
+# Создание роли
+create_role("db_admin", "sql_exec,backup,restore")
+
+# Назначение роли
+assign_role("alice", "db_admin")
+
+# Проверка прав
+perms = check_permissions()
+can_deploy = has_permission("deploy")
+
+# Смена роли
+set role admin
+
+================================================================================
+СЦЕНАРИИ (.octo файлы)
+================================================================================
+
+# Заголовок сценария
+required_role: "ci_manager"
+
+# Переменные сценария
+env = "production"
+config_file = "prod-config.yaml"
+
+# Логика
+if has_permission("deploy") {
+    result = apply_diff($config_file)
+    
+    if $result.status == "success" {
+        deploy($env)
+    } else {
+        escalate("ops-team")
+    }
+}
+
+# Запуск сценария
+run_scenario("deploy")
+list_scenarios()
+
+================================================================================
+СТАНДАРТНАЯ БИБЛИОТЕКА
+================================================================================
+
+СИСТЕМНЫЕ ФУНКЦИИ:
+- print(message)           # Вывод сообщения
+- system_info()            # Информация о системе
+- user_info()              # Информация о пользователе
+
+СТРОКОВЫЕ ФУНКЦИИ:
+- concat(str1, str2)       # Конкатенация строк
+- length(string)           # Длина строки
+- substring(str, start)    # Подстрока
+
+МАТЕМАТИЧЕСКИЕ ФУНКЦИИ:
+- add(a, b)               # Сложение
+- multiply(a, b)          # Умножение
+- random()                # Случайное число
+
+ФУНКЦИИ МАССИВОВ:
+- append(array, item)     # Добавить элемент
+- slice(array, start)     # Срез массива
+- sort(array)             # Сортировка
+
+I/O ФУНКЦИИ:
+- println(message)        # Печать с новой строкой
+- read()                  # Чтение ввода
+- write_file(path, data)  # Запись в файл
+
+ВРЕМЕННЫЕ ФУНКЦИИ:
+- now()                   # Текущее время
+- sleep(seconds)          # Пауза
+
+================================================================================
+КОМПИЛЯЦИЯ
+================================================================================
+
+# Компиляция в нативный код
+compile_native("my_program")
+
+# Полная сборка проекта
+build_result = run_scenario("native_build")
+
+# Bootstrap компиляция (самокомпиляция)
+bootstrap_octochan()
+
+================================================================================
+ЗАПУСК ПРОГРАММ
+================================================================================
+
+ИНТЕРАКТИВНЫЙ РЕЖИМ:
+$ ./octochan
+> system_info()
+> create_alias("hi", "print")
+> hi("Hello!")
+
+ВЫПОЛНЕНИЕ КОДА:
+$ ./octochan eval 'print("Hello World!")'
+$ ./octochan eval 'system_info() |> filter("version")'
+$ ./octochan eval 'run_scenario("deploy")'
+
+КОМПИЛЯЦИЯ:
+$ ./octochan eval 'compile_native("my_program")'
+$ ./my_program_bin
+
+================================================================================
+HELLO WORLD ПРИМЕР
+================================================================================
+
+# hello.octo
+required_role: "default"
+
+# Простой Hello World
+message = "Hello, OctoChan World!"
+print($message)
+
+# Расширенный пример
+name = "OctoChan"
+version = system_info() |> filter("version")
+greeting = "Welcome to " + $name + " v" + $version
+
+result = {
+    "message": $message,
+    "greeting": $greeting,
+    "language": "octochan",
+    "status": "success"
+}
+
+print($result.greeting)
+
+================================================================================
+ЗАПУСК HELLO WORLD:
+================================================================================
+
+$ ./octochan eval 'run_scenario("hello")'
+Hello, OctoChan World!
+Welcome to OctoChan v3.0
+
+ИЛИ НАПРЯМУЮ:
+$ ./octochan eval 'print("Hello, OctoChan World!")'
+Hello, OctoChan World!
+
+================================================================================
+ПРОДВИНУТЫЕ ВОЗМОЖНОСТИ
+================================================================================
+
+1. КОНВЕЙЕРЫ С УСЛОВИЯМИ:
+   result = data |> 
+            filter("active") |> 
+            validate() |> 
+            process() |>
+            save()
+
+2. СЛОЖНЫЕ ОБЪЕКТЫ:
+   deployment = {
+       "app": "web-service",
+       "env": "production",
+       "config": {
+           "replicas": 3,
+           "resources": {
+               "cpu": "500m",
+               "memory": "1Gi"
+           }
+       }
+   }
+
+3. ЦИКЛЫ:
+   services = ["web", "api", "db"]
+   for $service in $services {
+       deploy_service($service)
+   }
+
+4. ОБРАБОТКА ОШИБОК:
+   result = risky_operation()
+   if $result.status == "error" {
+       handle_error($result.message)
+   }
+
+================================================================================
+ОСОБЕННОСТИ OCTOCHAN
+================================================================================
+
+✅ САМОХОСТИНГ - компилятор написан на OctoChan
+✅ НАТИВНАЯ КОМПИЛЯЦИЯ - машинный код без зависимостей  
+✅ ВСТРОЕННАЯ БЕЗОПАСНОСТЬ - система ролей и прав
+✅ КОНВЕЙЕРЫ - элегантная обработка данных
+✅ АЛИАСЫ - переиспользование команд
+✅ МИНИМАЛЬНЫЙ РАЗМЕР - бинарники от 8KB
+✅ БЫСТРАЯ КОМПИЛЯЦИЯ - мгновенная сборка
+✅ ПРОСТОЙ СИНТАКСИС - легко изучать
+
+================================================================================
+ЗАКЛЮЧЕНИЕ
+================================================================================
+
+OctoChan - современный системный язык программирования, созданный для 
+автоматизации, DevOps и системного администрирования. Сочетает простоту 
+скриптовых языков с производительностью компилируемых языков.
+
+Официальный сайт: https://octochan.dev
+Документация: https://docs.octochan.dev
+Исходный код: https://github.com/octochan/octochan
+
+Copyright (c) 2025 OctoChan Project
+Лицензия: MIT
+
+================================================================================

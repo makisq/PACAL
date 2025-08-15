@@ -1,0 +1,64 @@
+%YAML 1.2
+---
+name: OctoChan
+file_extensions:
+  - octo
+scope: source.octochan
+
+contexts:
+  main:
+    - include: comments
+    - include: keywords
+    - include: strings
+    - include: numbers
+    - include: functions
+    - include: variables
+    - include: operators
+    - include: roles
+
+  comments:
+    - match: '#.*$'
+      scope: comment.line.octochan
+
+  keywords:
+    - match: '\b(if|else|for|while|in|required_role)\b'
+      scope: keyword.control.octochan
+    - match: '\b(create_alias|run_scenario|list_scenarios|has_permission)\b'
+      scope: keyword.operator.octochan
+    - match: '\b(true|false|null)\b'
+      scope: constant.language.octochan
+
+  strings:
+    - match: '"'
+      scope: punctuation.definition.string.begin.octochan
+      push:
+        - meta_scope: string.quoted.double.octochan
+        - match: '\\.'
+          scope: constant.character.escape.octochan
+        - match: '"'
+          scope: punctuation.definition.string.end.octochan
+          pop: true
+
+  numbers:
+    - match: '\b\d+(\.\d+)?\b'
+      scope: constant.numeric.octochan
+
+  functions:
+    - match: '\b(print|system_info|user_info|apply_diff|filter|count|compile_native)\b'
+      scope: entity.name.function.octochan
+
+  variables:
+    - match: '\$[a-zA-Z_][a-zA-Z0-9_]*'
+      scope: variable.other.octochan
+    - match: '\b[a-zA-Z_][a-zA-Z0-9_]*(?=\s*=)'
+      scope: variable.other.octochan
+
+  operators:
+    - match: '\|>'
+      scope: keyword.operator.pipeline.octochan
+    - match: '(==|!=|<=|>=|<|>|\+|\-|\*|\/|=)'
+      scope: keyword.operator.octochan
+
+  roles:
+    - match: '(?<=required_role:\s)"[^"]*"'
+      scope: string.quoted.double.role.octochan

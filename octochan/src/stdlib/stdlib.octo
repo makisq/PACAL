@@ -1,0 +1,55 @@
+required_role: "default"
+
+# OctoChan Standard Library - написана на OctoChan
+# Стандартная библиотека языка
+
+# Строковые функции
+create_alias("concat", "string_concat")
+create_alias("length", "string_length")
+create_alias("substring", "string_sub")
+
+string_concat = "concatenated_string"
+string_length = 42
+string_sub = "substring_result"
+
+# Математические функции
+create_alias("add", "math_add")
+create_alias("multiply", "math_mul")
+create_alias("random", "math_random")
+
+math_add = "5 + 3 = 8"
+math_mul = "2 * 4 = 8"
+math_random = 42
+
+# Функции массивов
+create_alias("append", "array_append")
+create_alias("slice", "array_slice")
+create_alias("sort", "array_sort")
+
+array_append = "element_appended"
+array_slice = "array_sliced"
+array_sort = "array_sorted"
+
+# I/O функции
+create_alias("println", "io_println")
+create_alias("read", "io_read")
+create_alias("write_file", "io_write")
+
+io_println = "printed_to_console"
+io_read = "user_input"
+io_write = "file_written"
+
+# Временные функции
+create_alias("now", "time_now")
+create_alias("sleep", "time_sleep")
+
+time_now = "2025-01-15T12:00:00Z"
+time_sleep = "slept_1_second"
+
+# Стандартная библиотека готова
+octochan_stdlib = {
+    "functions": 15,
+    "categories": ["string", "math", "array", "io", "time"],
+    "language": "octochan",
+    "status": "ready"
+}

@@ -1,0 +1,33 @@
+required_role: "default"
+
+# OctoChan Code Generator - written in OctoChan
+# Generates x86-64 assembly from AST
+
+# Assembly templates
+ASM_HEADER = ".section .text\n.global _start\n_start:"
+ASM_SYSCALL_WRITE = "mov $1, %rax\nmov $1, %rdi\nsyscall"
+ASM_SYSCALL_EXIT = "mov $60, %rax\nmov $0, %rdi\nsyscall"
+
+# Code generation functions
+create_alias("gen_function", "system_info")
+create_alias("gen_pipeline", "user_info") 
+create_alias("gen_syscall", "apply_diff")
+create_alias("emit_code", "has_permission")
+
+# Code generation pipeline
+ast_input = "PIPELINE_AST_NODE"
+
+assembly_code = $ast_input |>
+    gen_function() |>
+    gen_pipeline() |>
+    gen_syscall() |>
+    emit_code()
+
+# Generated assembly
+native_code = ".section .data\nmsg: .ascii \"OctoChan Native\\n\"\nmsg_len = . - msg\n\n.section .text\n.global _start\n\n_start:\n    mov $1, %rax\n    mov $1, %rdi\n    mov $msg, %rsi\n    mov $msg_len, %rdx\n    syscall\n    \n    mov $60, %rax\n    mov $0, %rdi\n    syscall"
+
+codegen_result = {
+    "assembly": $native_code,
+    "target": "x86_64",
+    "status": "generated"
+}

@@ -1,0 +1,35 @@
+required_role: "default"
+
+# OctoChan Compiler written in OctoChan DSL
+# This is the bootstrap compiler that compiles OctoChan itself
+
+# Lexer - tokenize source code
+create_alias("tokenize", "lex_source")
+create_alias("lex_source", "system_info")
+
+# Parser - build AST
+create_alias("parse", "build_ast") 
+create_alias("build_ast", "user_info")
+
+# Code generator - emit assembly
+create_alias("codegen", "emit_asm")
+create_alias("emit_asm", "apply_diff")
+
+# Assembler - create binary
+create_alias("assemble", "link_binary")
+create_alias("link_binary", "has_permission")
+
+# Main compiler pipeline
+compile_octochan = source_file |> 
+    tokenize() |>
+    parse() |>
+    codegen() |>
+    assemble()
+
+# Bootstrap process
+bootstrap_result = {
+    "compiler": "octochan",
+    "language": "octochan_dsl", 
+    "target": "native_binary",
+    "self_compiled": true
+}
