@@ -15,6 +15,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type TableConfig struct {
+	Production  string `mapstructure:"production" yaml:"production"`
+	Test        string `mapstructure:"test" yaml:"test"`
+	Development string `mapstructure:"development" yaml:"development"`
+}
+
+type EnvironmentConfig struct {
+	Tables       map[string]TableConfig `mapstructure:"tables" yaml:"tables"`
+	DefaultTable string                 `mapstructure:"default_table" yaml:"default_table"`
+}
 type APIRequest struct {
 	Method  string
 	URL     string
@@ -28,13 +38,18 @@ type ScenarioModule interface {
 }
 
 type ScenarioData struct {
-	Service    string                 `yaml:"service"`
-	Parameters map[string]interface{} `yaml:"parameters"`
-	Targets    []Target               `yaml:"targets"`
+	Service     string                   `yaml:"service"`
+	Parameters  map[string]interface{}   `yaml:"parameters"`
+	Targets     []Target                 `yaml:"targets"`
+	Environment string                   `mapstructure:"environment" yaml:"environment"`
+	TableID     string                   `mapstructure:"table_id" yaml:"table_id"`
+	Items       []map[string]interface{} `json:"items"`
 }
 
 type Target struct {
-	SVMCI string `yaml:"svm_ci"`
+	SVMCI  string   `yaml:"svm_ci"`
+	CIList []string `yaml:"ci_list" json:"ci_list"`
+	IP     string   `json:"IP"`
 }
 
 type Scenario struct {
@@ -51,7 +66,17 @@ var scenarioModules = make(map[string]scenarioModuleCreator)
 func RegisterScenarioModule(serviceName string, creator scenarioModuleCreator) {
 	scenarioModules[serviceName] = creator
 }
+func (t *Target) GetCIs() []string {
+	if t.SVMCI != "" {
+		return []string{t.SVMCI}
+	}
 
+	if t.CIList != nil {
+		return t.CIList
+	}
+
+	return []string{}
+}
 func ExecuteRequest(req *APIRequest) (string, error) {
 	jsonData, err := json.Marshal(req.Body)
 	if err != nil {
@@ -111,109 +136,107 @@ func ExecuteRequest(req *APIRequest) (string, error) {
 		return "", fmt.Errorf("неподдерживаемый формат ID: %T, полный ответ: %v", result["id"], result)
 	}
 }
+
 func ParseScenarioData(data []byte) (*ScenarioData, error) {
 	var jsonData struct {
-		Service    string                 `json:"service"`
-		Parameters map[string]interface{} `json:"parameters"`
-		Targets    interface{}            `json:"targets"`
-		Items      []map[string]string    `json:"items"`
+		Service    string                   `json:"service"`
+		Parameters map[string]interface{}   `json:"parameters"`
+		Targets    interface{}              `json:"targets"`
+		Items      []map[string]interface{} `json:"items"`
 	}
 
 	if err := json.Unmarshal(data, &jsonData); err == nil {
-		return parseScenarioDataFromInterface(jsonData.Service, jsonData.Parameters, jsonData.Targets)
+		return parseScenarioDataFromInterface(jsonData.Service, jsonData.Parameters, jsonData.Targets, jsonData.Items)
 	}
 
 	var yamlData struct {
-		Service    string                 `yaml:"service"`
-		Parameters map[string]interface{} `yaml:"parameters"`
-		Targets    interface{}            `yaml:"targets"`
-		Items      []map[string]string    `yaml:"items"`
+		Service    string                   `yaml:"service"`
+		Parameters map[string]interface{}   `yaml:"parameters"`
+		Targets    interface{}              `yaml:"targets"`
+		Items      []map[string]interface{} `yaml:"items"`
 	}
 
 	if err := yaml.Unmarshal(data, &yamlData); err != nil {
 		return nil, fmt.Errorf("ошибка парсинга сценария (ни JSON, ни YAML): %w", err)
 	}
 
-	return parseScenarioDataFromInterface(yamlData.Service, yamlData.Parameters, yamlData.Targets)
+	return parseScenarioDataFromInterface(yamlData.Service, yamlData.Parameters, yamlData.Targets, yamlData.Items)
 }
 
-func parseScenarioDataFromInterface(service string, parameters map[string]interface{}, targets interface{}) (*ScenarioData, error) {
+func parseScenarioDataFromInterface(service string, parameters map[string]interface{}, targets interface{}, items []map[string]interface{}) (*ScenarioData, error) {
 	s := &ScenarioData{
 		Service:    service,
 		Parameters: parameters,
+		Items:      items,
 	}
 
-	switch v := targets.(type) {
-	case []interface{}:
-		s.Targets = make([]Target, 0)
-		for _, item := range v {
-			if targetMap, ok := item.(map[string]interface{}); ok {
-				if ciList, ok := targetMap["svm_ci"].([]interface{}); ok {
-					for _, ci := range ciList {
-						if ciStr, ok := ci.(string); ok {
-							s.Targets = append(s.Targets, Target{SVMCI: ciStr})
-						} else {
-							return nil, fmt.Errorf("неверный формат svm_ci в списке: ожидается строка, получено %T", ci)
+	if targets != nil {
+		switch v := targets.(type) {
+		case []interface{}:
+			s.Targets = make([]Target, 0)
+			for _, item := range v {
+				if targetMap, ok := item.(map[string]interface{}); ok {
+					target := Target{}
+					if svmCI, exists := targetMap["svm_ci"]; exists {
+						switch ciValue := svmCI.(type) {
+						case []interface{}:
+							for _, ci := range ciValue {
+								if ciStr, ok := ci.(string); ok {
+									target.CIList = append(target.CIList, ciStr)
+								}
+							}
+
+							if len(target.CIList) == 1 {
+								target.SVMCI = target.CIList[0]
+							}
+						case string:
+							target.SVMCI = ciValue
+							target.CIList = []string{ciValue}
 						}
 					}
-				} else if ciStr, ok := targetMap["svm_ci"].(string); ok {
-					s.Targets = append(s.Targets, Target{SVMCI: ciStr})
-				} else {
-					return nil, fmt.Errorf("неверный формат target: ожидается svm_ci с массивом или строкой")
-				}
-			} else {
-				return nil, fmt.Errorf("неверный формат target: ожидается объект с svm_ci")
-			}
-		}
-	case []map[string]interface{}:
-		s.Targets = make([]Target, 0)
-		for _, t := range v {
-			if ciList, ok := t["svm_ci"].([]interface{}); ok {
-				for _, ci := range ciList {
-					if ciStr, ok := ci.(string); ok {
-						s.Targets = append(s.Targets, Target{SVMCI: ciStr})
-					} else {
-						return nil, fmt.Errorf("неверный формат svm_ci в списке: ожидается строка, получено %T", ci)
-					}
-				}
-			} else if ci, ok := t["svm_ci"].(string); ok {
-				s.Targets = append(s.Targets, Target{SVMCI: ci})
-			} else {
-				return nil, fmt.Errorf("неверный формат target: ожидается svm_ci с массивом или строкой")
-			}
-		}
-	case map[string]interface{}:
 
-		if ciList, ok := v["svm_ci"].([]interface{}); ok {
-			s.Targets = make([]Target, 0)
-			for _, ci := range ciList {
-				if ciStr, ok := ci.(string); ok {
-					s.Targets = append(s.Targets, Target{SVMCI: ciStr})
-				} else {
-					return nil, fmt.Errorf("неверный формат svm_ci в списке: ожидается строка, получено %T", ci)
+					if ip, ok := targetMap["ip"].(string); ok {
+						target.IP = ip
+					}
+
+					s.Targets = append(s.Targets, target)
 				}
 			}
-		} else if ci, ok := v["svm_ci"].(string); ok {
-			s.Targets = append(s.Targets, Target{SVMCI: ci})
-		} else {
-			return nil, fmt.Errorf("неверный формат targets: ожидается svm_ci с массивом или строкой")
+		case map[string]interface{}:
+			target := Target{}
+			if svmCI, exists := v["svm_ci"]; exists {
+				switch ciValue := svmCI.(type) {
+				case []interface{}:
+					for _, ci := range ciValue {
+						if ciStr, ok := ci.(string); ok {
+							target.CIList = append(target.CIList, ciStr)
+						}
+					}
+					if len(target.CIList) == 1 {
+						target.SVMCI = target.CIList[0]
+					}
+				case string:
+					target.SVMCI = ciValue
+					target.CIList = []string{ciValue}
+				}
+			}
+
+			if ip, ok := v["ip"].(string); ok {
+				target.IP = ip
+			}
+
+			s.Targets = append(s.Targets, target)
+		default:
+			return nil, fmt.Errorf("неподдерживаемый формат targets: %T", v)
 		}
-	default:
-		return nil, fmt.Errorf("неподдерживаемый формат targets: %T", v)
 	}
 
 	if s.Service == "" {
 		return nil, fmt.Errorf("не указано имя сервиса (service)")
 	}
 
-	if len(s.Targets) == 0 {
-		return nil, fmt.Errorf("не указаны целевые серверы (targets)")
-	}
-
-	for i, target := range s.Targets {
-		if target.SVMCI == "" {
-			return nil, fmt.Errorf("пустой svm_ci в target #%d", i+1)
-		}
+	if len(s.Targets) == 0 && len(s.Items) == 0 {
+		return nil, fmt.Errorf("не указаны целевые серверы (targets) или items")
 	}
 
 	return s, nil
@@ -224,6 +247,10 @@ func (s *Scenario) GetServers() []string {
 		servers = append(servers, target.SVMCI)
 	}
 	return servers
+}
+
+func ExecuteScenarioData(scenarioData []byte, customParams map[string]string) ([]string, error) {
+	return ExecuteModularScenario(scenarioData, customParams)
 }
 
 func prepareItemsWithTarget(target Target) map[string]string {
