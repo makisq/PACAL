@@ -92,4 +92,4 @@ func (m *PgBouncerTuningModule) GenerateRequests() ([]*core.APIRequest, error) {
 	}
 
 	return requests, nil
-}
+} 
