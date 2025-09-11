@@ -23,12 +23,18 @@ func equalValues(a, b interface{}) bool {
 	}
 	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
 }
-
-func getValueOrNA(value interface{}) interface{} {
+func getValueOrNA(value interface{}) string {
 	if value == nil {
 		return "N/A"
 	}
-	return value
+	switch v := value.(type) {
+	case string:
+		return v
+	case map[string]string:
+		return ""
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func exitWithError(err error) {

@@ -175,4 +175,4 @@ func showCommandHistory() {
 			fmt.Printf("%d. %s\n", i+1, cmd)
 		}
 	}
-}
+} 
