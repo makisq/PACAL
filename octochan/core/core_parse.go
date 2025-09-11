@@ -177,38 +177,55 @@ func ParseConfig(fileContent interface{}) (map[string]map[string]string, error) 
 
 func CompareConfigs(db1Config, db2Config map[string]map[string]string, db1Name, db2Name string) map[string]map[string]interface{} {
 	diff := make(map[string]map[string]interface{})
-	allKeys := make(map[string]bool)
+	allParams := make(map[string]bool)
 
-	for key := range db1Config {
-		allKeys[key] = true
+	// Собираем все уникальные параметры из обоих конфигов
+	for section, params := range db1Config {
+		for param := range params {
+			fullParam := section + "." + param
+			allParams[fullParam] = true
+		}
 	}
-	for key := range db2Config {
-		allKeys[key] = true
+	for section, params := range db2Config {
+		for param := range params {
+			fullParam := section + "." + param
+			allParams[fullParam] = true
+		}
 	}
 
-	var sortedKeys []string
-	for key := range allKeys {
-		sortedKeys = append(sortedKeys, key)
+	// Преобразуем в отсортированный список
+	var sortedParams []string
+	for param := range allParams {
+		sortedParams = append(sortedParams, param)
 	}
-	sort.Strings(sortedKeys)
+	sort.Strings(sortedParams)
 
-	for _, key := range sortedKeys {
-		db1Val, db1Exists := db1Config[key]
-		db2Val, db2Exists := db2Config[key]
+	for _, fullParam := range sortedParams {
+		parts := strings.Split(fullParam, ".")
+		if len(parts) < 2 {
+			continue
+		}
+		section := parts[0]
+		param := strings.Join(parts[1:], ".")
 
-		var normDb1, normDb2 interface{}
-
-		if db1Exists {
-			normDb1 = Normalize_value(db1Val)
-		} else {
-			normDb1 = nil
+		db1Val, db1Exists := "", false
+		if sectionParams, sectionExists := db1Config[section]; sectionExists {
+			if val, paramExists := sectionParams[param]; paramExists {
+				db1Val = val
+				db1Exists = true
+			}
 		}
 
-		if db2Exists {
-			normDb2 = Normalize_value(db2Val)
-		} else {
-			normDb2 = nil
+		db2Val, db2Exists := "", false
+		if sectionParams, sectionExists := db2Config[section]; sectionExists {
+			if val, paramExists := sectionParams[param]; paramExists {
+				db2Val = val
+				db2Exists = true
+			}
 		}
+
+		normDb1 := Normalize_value(db1Val)
+		normDb2 := Normalize_value(db2Val)
 
 		if !equalValues(normDb1, normDb2) {
 			status := ""
@@ -221,13 +238,11 @@ func CompareConfigs(db1Config, db2Config map[string]map[string]string, db1Name, 
 			}
 
 			diffEntry := make(map[string]interface{})
-			diffEntry[db1Name] = getValueOrNA(db1Val)
-			diffEntry[db2Name] = getValueOrNA(db2Val)
+			diffEntry[db1Name] = db1Val
+			diffEntry[db2Name] = db2Val
 			diffEntry["status"] = status
-			diffEntry["norm1"] = normDb1
-			diffEntry["norm2"] = normDb2
 
-			diff[key] = diffEntry
+			diff[fullParam] = diffEntry
 		}
 	}
 
@@ -244,8 +259,10 @@ func SaveDiffToFile(diff map[string]map[string]interface{}, outputFile, db1Name,
 	currentTime := time.Now().Format("2006-01-02 15:04:05")
 	header := fmt.Sprintf("Comparison report: %s vs %s\n", db1Name, db2Name)
 	header += fmt.Sprintf("Generated at: %s\n\n", currentTime)
-	header += fmt.Sprintf("%-50s | %-30s | %-30s | %-15s\n", "Parameter", db1Name, db2Name, "Status")
-	header += fmt.Sprintf("%s\n", strings.Repeat("-", 125))
+
+	// Увеличиваем ширину колонок для длинных значений
+	header += fmt.Sprintf("%-50s | %-60s | %-60s | %-15s\n", "Parameter", db1Name, db2Name, "Status")
+	header += fmt.Sprintf("%s\n", strings.Repeat("-", 190))
 
 	if _, err := f.WriteString(header); err != nil {
 		return fmt.Errorf("failed to write header: %v", err)
@@ -274,25 +291,50 @@ func SaveDiffToFile(diff map[string]map[string]interface{}, outputFile, db1Name,
 		if statusI == fmt.Sprintf("Only in %s", db1Name) && statusJ == fmt.Sprintf("Only in %s", db2Name) {
 			return true
 		}
-		return false
+		return items[i].param < items[j].param
 	})
 
 	for _, item := range items {
 		param := item.param
 		data := item.data
 
+		// Правильно извлекаем значения для каждого файла
 		valDB1 := "N/A"
-		if v, ok := data[db1Name]; ok && v != "N/A" {
-			valDB1 = fmt.Sprintf("%v", v)
+		if db1Val, exists := data[db1Name]; exists {
+			if sectionMap, ok := db1Val.(map[string]string); ok {
+				// Если это секция, берем значение параметра
+				if paramVal, paramExists := sectionMap[param]; paramExists {
+					valDB1 = paramVal
+				}
+			} else if strVal, ok := db1Val.(string); ok {
+				valDB1 = strVal
+			}
 		}
 
 		valDB2 := "N/A"
-		if v, ok := data[db2Name]; ok && v != "N/A" {
-			valDB2 = fmt.Sprintf("%v", v)
+		if db2Val, exists := data[db2Name]; exists {
+			if sectionMap, ok := db2Val.(map[string]string); ok {
+				if paramVal, paramExists := sectionMap[param]; paramExists {
+					valDB2 = paramVal
+				}
+			} else if strVal, ok := db2Val.(string); ok {
+				valDB2 = strVal
+			}
 		}
 
 		status := data["status"].(string)
-		line := fmt.Sprintf("%-50s | %-30s | %-30s | %-15s\n", param, valDB1, valDB2, status)
+
+		if len(valDB1) > 55 {
+			valDB1 = valDB1[:52] + "..."
+		}
+		if len(valDB2) > 55 {
+			valDB2 = valDB2[:52] + "..."
+		}
+		if len(param) > 48 {
+			param = param[:45] + "..."
+		}
+
+		line := fmt.Sprintf("%-50s | %-60s | %-60s | %-15s\n", param, valDB1, valDB2, status)
 
 		if _, err := f.WriteString(line); err != nil {
 			return fmt.Errorf("failed to write diff line: %v", err)
