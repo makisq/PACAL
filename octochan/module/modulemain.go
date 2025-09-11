@@ -47,8 +47,13 @@ func loadModulesFromDir(dir string) {
 		}
 	}
 }
+
+
+
 func init() {
 	core.RegisterScenarioModule("psqlse_tuningpgbouncer", NewPgBouncerTuningModule)
 	core.RegisterScenarioModule("psql_tuning_params_se", NewPsqlTuningParamsModule)
+	core.RegisterScenarioModule("postgresql_se_get_config_files", NewPostgresConfigFilesModule)
+	core.RegisterScenarioModule("pangolin_restart", NewPangolinRestartModule)
 	AutoRegisterModules()
 }
