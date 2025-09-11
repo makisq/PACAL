@@ -1,0 +1,27 @@
+{
+  "service": "psql_tuning_params_se",
+  "parameters": {
+    "restart": false,
+    "port": 5433,
+    "role": "standalone",
+    "ip_replics": "10.28.199.120",
+    "svm_ip": "10.28.199.120",
+    "skip_sm_conflicts": false,
+    "hugepages": false,
+    "parameters": [
+      {
+        "name": "max_connections",
+        "setting": "800",
+        "unit": ""
+      }
+    ]
+  },
+  "targets": [
+    {
+      "svm_ci": "CI08453376" 
+    }
+  ]
+  
+}
+
+
