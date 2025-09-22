@@ -4,3 +4,21 @@ select status from service_info_status sis where sis.event_guid in (select event
 MessageQueueReceive  DataFileRead bufferMapping wait_event 
 exclusiveLock AccessesShareLock
 locktype virtualxid relation
+Limit  (cost=113.06..113.07 rows=3 width=18)
+  ->  Sort  (cost=113.06..113.18 rows=49 width=18)
+        Sort Key: sis.creation_date DESC
+        ->  Nested Loop  (cost=9.09..112.43 rows=49 width=18)
+              ->  HashAggregate  (cost=8.66..8.69 rows=3 width=194)
+                    Group Key: (si.event_guid)::text
+                    ->  Result  (cost=0.00..8.65 rows=3 width=194)
+                          ->  Append  (cost=0.00..8.65 rows=3 width=194)
+                                ->  Seq Scan on service_info si_1  (cost=0.00..0.00 rows=1 width=516)
+                                      Filter: (((event_guid)::text <> '2'::text) AND ((service_id)::text = '2019-01-01'::text) AND ((source_service_sign)::text = '1'::text))
+                                ->  Index Scan using source_service_sign_service_info_rem_0_idx on service_info_rem_0 si_2  (cost=0.29..4.32 rows=1 width=33)
+                                      Index Cond: ((source_service_sign)::text = '1'::text)
+                                      Filter: (((event_guid)::text <> '2'::text) AND ((service_id)::text = '2019-01-01'::text))
+                                ->  Index Scan using source_service_sign_service_info_rem_1_idx on service_info_rem_1 si_3  (cost=0.29..4.32 rows=1 width=33)
+                                      Index Cond: ((source_service_sign)::text = '1'::text)
+                                      Filter: (((event_guid)::text <> '2'::text) AND ((service_id)::text = '2019-01-01'::text))
+              ->  Index Scan using idx_service_info_status_event_guid on service_info_status sis  (cost=0.43..34.42 rows=16 width=51)
+                    Index Cond: ((event_guid)::text = (si.event_guid)::text)
