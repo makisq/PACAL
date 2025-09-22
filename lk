@@ -1,46 +1,6 @@
-а там таблица эта по чему партиционируется?
-16:00
-CREATE TABLE cca_oper.reconciliation_open (
-register_id varchar(100) NOT NULL,
-rec_id varchar(100) NOT NULL,
-op_date date NOT NULL,
-violation varchar(20) NOT NULL,
-create_date timestamp NOT NULL,
-modify_date timestamp NULL,
-amount numeric(23, 2) NOT NULL,
-product_factory_code varchar(50) NOT NULL,
-binded_product_factory_code varchar(50) NULL,
-business_service_id varchar(255) NULL,
-account_id uuid NULL,
-account varchar(50) NULL,
-party_id varchar(255) NULL,
-scenario varchar(100) NULL,
-tb_code varchar(10) NULL,
-depart_code varchar(20) NULL,
-factory_tag varchar(100) NULL,
-account_num varchar(50) NULL,
-sharding varchar(10) NULL,
-uniq_id uuid NOT NULL,
-comm_instance_id varchar(255) NULL,
-debt_product_id varchar(255) NULL,
-debt_or_comm_code varchar(255) NULL,
-service_code varchar(100) NULL,
-initial_date timestamp NULL,
-operation_user_name varchar(200) NULL,
-transaction_code varchar(100) NULL,
-scenario_template_code varchar(100) NULL,
-CONSTRAINT reconciliation_open_pk PRIMARY KEY (register_id, rec_id, op_date)
-)
-PARTITION BY RANGE (op_date);
-16:05
-окак
-16:05
-это ПК получается
-16:05
-ага
-16:05
-а че не встает тогда
-16:05
-порядок важен?
-16:05
-в ПК
+explain select reconcilia0_.OP_DATE as op_date1_6_, reconcilia0_.REC_ID as rec_id2_6_, reconcilia0_.REGISTER_ID as register3_6_, reconcilia0_.ACCOUNT as account4_6_, reconcilia0_.ACCOUNT_ID as account_5_6_, reconcilia0_.ACCOUNT_NUM as account_6_6_, reconcilia0_.AMOUNT as amount7_6_, reconcilia0_.BINDED_PRODUCT_FACTORY_CODE as binded_p8_6_, reconcilia0_.BUSINESS_SERVICE_ID as business9_6_, reconcilia0_.COMM_INSTANCE_ID as comm_in10_6_, reconcilia0_.CREATE_DATE as create_11_6_, reconcilia0_.DEBT_OR_COMM_CODE as debt_or12_6_, reconcilia0_.DEBT_PRODUCT_ID as debt_pr13_6_, reconcilia0_.DEPART_CODE as depart_14_6_, reconcilia0_.FACTORY_TAG as factory15_6_, reconcilia0_.INITIAL_DATE as initial16_6_, reconcilia0_.MODIFY_DATE as modify_17_6_, reconcilia0_.OPERATION_USER_NAME as operati18_6_, reconcilia0_.PARTY_ID as party_i19_6_, reconcilia0_.PRODUCT_FACTORY_CODE as product20_6_, reconcilia0_.SCENARIO as scenari21_6_, reconcilia0_.SCENARIO_TEMPLATE_CODE as scenari22_6_, reconcilia0_.SERVICE_CODE as service23_6_, reconcilia0_.SHARDING as shardin24_6_, reconcilia0_.TB_CODE as tb_code25_6_, reconcilia0_.TRANSACTION_CODE as transac26_6_, reconcilia0_.UNIQ_ID as uniq_id27_6_, reconcilia0_.VIOLATION as violati28_6_ from CCA_OPER.RECONCILIATION_OPEN reconcilia0_ where (reconcilia0_.OP_DATE, reconcilia0_.REC_ID, reconcilia0_.REGISTER_ID)=($1, $2, $3)
+Seq Scan on reconciliation_open_default reconcilia0_ (cost=0.00..4671.84 rows=1 width=2204)
+Filter: ((op_date = '2024-10-23'::date) AND ((rec_id)::text = 'b'::text) AND ((register_id)::text = 'd'::text))
+
+надл с помощью pg_hint_plan убрать  ::text 
+чтобы он не через него проходил
