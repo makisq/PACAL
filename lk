@@ -1,6 +1,6 @@
- MessageQueueReceive  DataFileRead bufferMapping wait_event 
+
+select status from service_info_status sis where sis.event_guid in (select event_guid from service_info si where si.service_id = $1 and si.source_service_sign = $2 and si.event_guid <> $3) order by creation_date desc limit $4
+и вот таки 4 похожих запроса вызввали блокировки 
+MessageQueueReceive  DataFileRead bufferMapping wait_event 
 exclusiveLock AccessesShareLock
 locktype virtualxid relation
-cb8a20b1b2d5ae4a SELECT av.id, av.accounting_date, av.value_rur, av.accounting_service_id, av.accounting_operation_id, dat.code AS adjustment_type_code, a.id AS adjustment_id, drt.code AS register_type_code, latt.tranche_id as product_id FROM adjustment_value_for_accounting av LEFT JOIN adjustment a on av.adjustment_id = a.id LEFT JOIN l_adjustment_to_tranche latt on a.id = latt.adjustment_id LEFT JOIN d_adjustment_type dat on a.adjustment_type_code = dat.code LEFT JOIN d_operation_type_to_accounting_scenario_adjustment dottasa ON dat.code = dottasa.adjustment_code LEFT JOIN d_register_type drt on dat.register_type_id = drt.id WHERE (av.id > $1 OR $2 IS NULL) AND dottasa.fiic_scenario_code IN ($3, $4) AND av.version_end_date IS NULL AND ((av.value_rur < 0 and dottasa.adjustment_movement_sign = false) OR (av.value_rur > 0 and dottasa.adjustment_movement_sign = true)) AND av.accounting_date >= $5 AND av.accounting_date <= $6 AND av.accounting_service_id IS NULL AND av.accounting_operation_id IS NULL AND a.version_end_date IS NULL ORDER BY av.id LIMIT $7
-select status from service_info_status sis where sis.event_guid in (select event_guid from service_info si where si.service_id = $1 and si.source_service_sign = $2 and si.event_guid <> $3) order by creation_date desc limit $4
-select status from service_info_status sis where sis.event_guid in (select event_guid from service_info si where si.service_id = $1 and si.source_service_sign = $2 and si.event_guid <> $3) order by creation_date desc limit $4
