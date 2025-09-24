@@ -1,4 +1,7 @@
-The task includes an option with an undefined variable. The error was: 'ansible.utils.unsafe_proxy.AnsibleUnsafeText object' has no attribute 'host' The error appears to be in '/data/jenkins/workspace/RLM_PROD/UBD/PGSE/postgresql_se_pgbouncer_tuning_discover/_common_roles_by_db/psql/pgse_discover/tasks/patroni_info.yml': line 51, column 3, but may be elsewhere in the file depending on the exact syntax problem. The offending line appears to be: - name: Getting replic IP ^ here
+Ошибка: 
 
-Скрыть
-{"msg":"The task includes an option with an undefined variable. The error was: 'ansible.utils.unsafe_proxy.AnsibleUnsafeText object' has no attribute 'host'\n\nThe error appears to be in '/data/jenkins/workspace/RLM_PROD/UBD/PGSE/postgresql_se_pgbouncer_tuning_discover/_common_roles_by_db/psql/pgse_discover/tasks/patroni_info.yml': line 51, column 3, but may\nbe elsewhere in the file depending on the exact syntax problem.\n\nThe offending line appears to be:\n\n\n- name: Getting replic IP\n  ^ here\n","action":"shell","hostname":"tvldd-pprb00856.delta.sbrf.ru"}
+2025-09-23 04:08:46.703 [streampro_notification_processor-1] [ERROR] [o.h.e.jdbc.spi.SqlExceptionHelper.logExceptions] - ERROR: fetchPreparedStatementMapping. Client session: 1551965763462496512 doesnt exist
+
+Ошибка из лога БД:
+
+2025-09-23 04:08:46 MSK [2660713]: [7986-1] app=PostgreSQL JDBC Driver,user=aeset_appl,db=dbaesetift,client=tvldd-pprb00856.delta.sbrf.ru ERROR:  fetchPreparedStatementMapping. Client session: 1551965763462496512 doesnt exist
