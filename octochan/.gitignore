@@ -1,0 +1,26 @@
+# Сборочные артефакты
+ochan
+ochan.exe
+dwd
+dwd.exe
+/bin/
+*.exe
+*.test
+*.out
+
+# Модули-плагины и их контрольные суммы — бинарники, в git им не место
+*.hcplugin
+*.hcplugin.sha256
+*.so
+
+# Локальные данные и секреты
+.env
+config.yaml
+/reports/
+/snapshots/
+/logs/
+
+# Рабочие файлы
+patched.conf
+diff_report_*.txt
+snapshot_*.json
