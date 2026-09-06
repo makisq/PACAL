@@ -6,6 +6,9 @@ require (
 	github.com/hashicorp/go-hclog v0.14.1
 	github.com/hashicorp/go-plugin v1.4.10
 	github.com/spf13/cobra v1.9.1
+	golang.org/x/term v0.27.0
+	google.golang.org/grpc v1.67.3
+	google.golang.org/protobuf v1.36.1
 )
 
 require (
@@ -16,8 +19,6 @@ require (
 	github.com/oklog/run v1.0.0 // indirect
 	golang.org/x/net v0.33.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20241223144023-3abc09e42ca8 // indirect
-	google.golang.org/grpc v1.67.3 // indirect
-	google.golang.org/protobuf v1.36.1 // indirect
 )
 
 require (
