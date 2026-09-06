@@ -1,0 +1,620 @@
+package lang
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// Parser — рекурсивный спуск с восхождением по приоритетам.
+type Parser struct {
+	tokens []Token
+	pos    int
+	src    []string // строки исходника для комментариев-описаний
+}
+
+// Parse разбирает исходник в файл с объявлениями и инструкциями.
+func Parse(name, src string) (*File, error) {
+	tokens, err := NewLexer(name, src).Tokenize()
+	if err != nil {
+		return nil, err
+	}
+
+	p := &Parser{tokens: tokens, src: strings.Split(src, "\n")}
+	return p.parseFile(name)
+}
+
+func (p *Parser) peek() Token { return p.tokens[p.pos] }
+func (p *Parser) atEOF() bool { return p.peek().Kind == TokenEOF }
+func (p *Parser) advance() Token {
+	tok := p.tokens[p.pos]
+	if tok.Kind != TokenEOF {
+		p.pos++
+	}
+	return tok
+}
+
+func (p *Parser) check(kind TokenKind) bool { return p.peek().Kind == kind }
+
+func (p *Parser) match(kinds ...TokenKind) bool {
+	for _, kind := range kinds {
+		if p.check(kind) {
+			p.advance()
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Parser) expect(kind TokenKind, context string) (Token, error) {
+	if p.check(kind) {
+		return p.advance(), nil
+	}
+	return Token{}, p.errorf(p.peek().Pos, "ожидалось %s %s, получено %s",
+		kind, context, p.peek())
+}
+
+func (p *Parser) errorf(pos Position, format string, args ...any) error {
+	return fmt.Errorf("%s: %s", pos, fmt.Sprintf(format, args...))
+}
+
+// skipNewlines пропускает пустые строки и точки с запятой.
+func (p *Parser) skipNewlines() {
+	for p.check(TokenNewline) || p.check(TokenSemicolon) {
+		p.advance()
+	}
+}
+
+func (p *Parser) parseFile(name string) (*File, error) {
+	file := &File{Name: name}
+
+	for {
+		p.skipNewlines()
+		if p.atEOF() {
+			return file, nil
+		}
+
+		if p.check(TokenAlias) {
+			decl, err := p.parseAlias()
+			if err != nil {
+				return nil, err
+			}
+			file.Aliases = append(file.Aliases, decl)
+			continue
+		}
+
+		stmt, err := p.parseStatement()
+		if err != nil {
+			return nil, err
+		}
+		file.Stmts = append(file.Stmts, stmt)
+	}
+}
+
+// docComment собирает комментарии, идущие непосредственно перед строкой line.
+func (p *Parser) docComment(line int) string {
+	var lines []string
+	for i := line - 2; i >= 0 && i < len(p.src); i-- {
+		trimmed := strings.TrimSpace(p.src[i])
+		if !strings.HasPrefix(trimmed, "#") {
+			break
+		}
+		lines = append([]string{strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))}, lines...)
+	}
+	return strings.TrimSpace(strings.Join(lines, " "))
+}
+
+func (p *Parser) parseAlias() (*AliasDecl, error) {
+	aliasTok := p.advance() // alias
+
+	nameTok, err := p.expect(TokenIdent, "— имя алиаса")
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expect(TokenLParen, "после имени алиаса"); err != nil {
+		return nil, err
+	}
+
+	var params []string
+	seen := make(map[string]bool)
+	for !p.check(TokenRParen) {
+		paramTok, err := p.expect(TokenIdent, "— имя параметра")
+		if err != nil {
+			return nil, err
+		}
+		if seen[paramTok.Text] {
+			return nil, p.errorf(paramTok.Pos, "параметр %q объявлен дважды", paramTok.Text)
+		}
+		seen[paramTok.Text] = true
+		params = append(params, paramTok.Text)
+
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+
+	if _, err := p.expect(TokenRParen, "в списке параметров"); err != nil {
+		return nil, err
+	}
+
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+
+	return &AliasDecl{
+		Pos:    aliasTok.Pos,
+		Name:   nameTok.Text,
+		Params: params,
+		Body:   body,
+		Doc:    p.docComment(aliasTok.Pos.Line),
+	}, nil
+}
+
+func (p *Parser) parseBlock() (*Block, error) {
+	p.skipNewlines()
+
+	openTok, err := p.expect(TokenLBrace, "— начало блока")
+	if err != nil {
+		return nil, err
+	}
+
+	block := &Block{Pos: openTok.Pos}
+	for {
+		p.skipNewlines()
+
+		if p.check(TokenRBrace) {
+			p.advance()
+			return block, nil
+		}
+		if p.atEOF() {
+			return nil, p.errorf(openTok.Pos, "блок не закрыт: нет }")
+		}
+
+		stmt, err := p.parseStatement()
+		if err != nil {
+			return nil, err
+		}
+		block.Stmts = append(block.Stmts, stmt)
+	}
+}
+
+func (p *Parser) parseStatement() (Stmt, error) {
+	switch p.peek().Kind {
+	case TokenIf:
+		return p.parseIf()
+	case TokenFor:
+		return p.parseFor()
+	case TokenReturn:
+		return p.parseReturn()
+	case TokenBreak:
+		tok := p.advance()
+		return &Break{Pos: tok.Pos}, p.endStatement()
+	case TokenContinue:
+		tok := p.advance()
+		return &Continue{Pos: tok.Pos}, p.endStatement()
+	case TokenLBrace:
+		return p.parseBlock()
+	case TokenAlias:
+		return nil, p.errorf(p.peek().Pos, "алиас можно объявлять только на верхнем уровне файла")
+	}
+
+	// Присваивание: идентификатор, за которым идёт '='.
+	// Обычное '==' сюда не попадает, потому что это отдельный токен.
+	if p.check(TokenIdent) && p.tokens[p.pos+1].Kind == TokenAssign {
+		nameTok := p.advance()
+		p.advance() // =
+
+		value, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		return &Assign{Pos: nameTok.Pos, Name: nameTok.Text, Value: value}, p.endStatement()
+	}
+
+	pos := p.peek().Pos
+	expr, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	return &ExprStmt{Pos: pos, Expr: expr}, p.endStatement()
+}
+
+// endStatement требует, чтобы инструкция завершалась переводом строки,
+// точкой с запятой или закрывающей скобкой блока.
+func (p *Parser) endStatement() error {
+	switch p.peek().Kind {
+	case TokenNewline, TokenSemicolon:
+		p.advance()
+		return nil
+	case TokenRBrace, TokenEOF:
+		return nil
+	default:
+		return p.errorf(p.peek().Pos, "лишнее выражение после инструкции: %s", p.peek())
+	}
+}
+
+func (p *Parser) parseIf() (Stmt, error) {
+	ifTok := p.advance()
+
+	cond, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+
+	then, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+
+	node := &If{Pos: ifTok.Pos, Cond: cond, Then: then}
+
+	// else может стоять на следующей строке после }.
+	saved := p.pos
+	p.skipNewlines()
+	if !p.match(TokenElse) {
+		p.pos = saved
+		return node, nil
+	}
+
+	if p.check(TokenIf) {
+		elseIf, err := p.parseIf()
+		if err != nil {
+			return nil, err
+		}
+		node.Else = elseIf
+		return node, nil
+	}
+
+	elseBlock, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	node.Else = elseBlock
+	return node, nil
+}
+
+func (p *Parser) parseFor() (Stmt, error) {
+	forTok := p.advance()
+
+	varTok, err := p.expect(TokenIdent, "— переменная цикла")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TokenIn, "после переменной цикла"); err != nil {
+		return nil, err
+	}
+
+	iterable, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+
+	return &For{Pos: forTok.Pos, Variable: varTok.Text, Iterable: iterable, Body: body}, nil
+}
+
+func (p *Parser) parseReturn() (Stmt, error) {
+	retTok := p.advance()
+
+	// return без значения.
+	if p.check(TokenNewline) || p.check(TokenSemicolon) || p.check(TokenRBrace) || p.atEOF() {
+		return &Return{Pos: retTok.Pos}, p.endStatement()
+	}
+
+	value, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	return &Return{Pos: retTok.Pos, Value: value}, p.endStatement()
+}
+
+// ---------------------------------------------------------------------------
+// Выражения
+//
+// Приоритеты, от низшего к высшему:
+//
+//	or
+//	and
+//	not
+//	== != < <= > >=
+//	|                 конвейер связывает крепче сравнения, чтобы
+//	                  a | b != 0 читалось как (a | b) != 0
+//	+ -
+//	* / %
+//	унарный -
+//	вызов, индекс
+// ---------------------------------------------------------------------------
+
+func (p *Parser) parseExpr() (Expr, error) { return p.parseOr() }
+
+func (p *Parser) parseOr() (Expr, error) {
+	left, err := p.parseAnd()
+	if err != nil {
+		return nil, err
+	}
+
+	for p.check(TokenOr) {
+		opTok := p.advance()
+		right, err := p.parseAnd()
+		if err != nil {
+			return nil, err
+		}
+		left = &Binary{Pos: opTok.Pos, Op: TokenOr, Left: left, Right: right}
+	}
+	return left, nil
+}
+
+func (p *Parser) parseAnd() (Expr, error) {
+	left, err := p.parseNot()
+	if err != nil {
+		return nil, err
+	}
+
+	for p.check(TokenAnd) {
+		opTok := p.advance()
+		right, err := p.parseNot()
+		if err != nil {
+			return nil, err
+		}
+		left = &Binary{Pos: opTok.Pos, Op: TokenAnd, Left: left, Right: right}
+	}
+	return left, nil
+}
+
+func (p *Parser) parseNot() (Expr, error) {
+	if p.check(TokenNot) {
+		opTok := p.advance()
+		operand, err := p.parseNot()
+		if err != nil {
+			return nil, err
+		}
+		return &Unary{Pos: opTok.Pos, Op: TokenNot, Operand: operand}, nil
+	}
+	return p.parseComparison()
+}
+
+func (p *Parser) parseComparison() (Expr, error) {
+	left, err := p.parsePipe()
+	if err != nil {
+		return nil, err
+	}
+
+	for {
+		kind := p.peek().Kind
+		switch kind {
+		case TokenEQ, TokenNE, TokenLT, TokenLE, TokenGT, TokenGE:
+			opTok := p.advance()
+			right, err := p.parsePipe()
+			if err != nil {
+				return nil, err
+			}
+			left = &Binary{Pos: opTok.Pos, Op: kind, Left: left, Right: right}
+		default:
+			return left, nil
+		}
+	}
+}
+
+func (p *Parser) parsePipe() (Expr, error) {
+	left, err := p.parseAdditive()
+	if err != nil {
+		return nil, err
+	}
+
+	for p.check(TokenPipe) {
+		opTok := p.advance()
+		p.skipNewlines() // конвейер можно переносить на следующую строку
+
+		right, err := p.parseAdditive()
+		if err != nil {
+			return nil, err
+		}
+		left = &Binary{Pos: opTok.Pos, Op: TokenPipe, Left: left, Right: right}
+	}
+	return left, nil
+}
+
+func (p *Parser) parseAdditive() (Expr, error) {
+	left, err := p.parseMultiplicative()
+	if err != nil {
+		return nil, err
+	}
+
+	for p.check(TokenPlus) || p.check(TokenMinus) {
+		opTok := p.advance()
+		right, err := p.parseMultiplicative()
+		if err != nil {
+			return nil, err
+		}
+		left = &Binary{Pos: opTok.Pos, Op: opTok.Kind, Left: left, Right: right}
+	}
+	return left, nil
+}
+
+func (p *Parser) parseMultiplicative() (Expr, error) {
+	left, err := p.parseUnary()
+	if err != nil {
+		return nil, err
+	}
+
+	for p.check(TokenStar) || p.check(TokenSlash) || p.check(TokenPercent) {
+		opTok := p.advance()
+		right, err := p.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		left = &Binary{Pos: opTok.Pos, Op: opTok.Kind, Left: left, Right: right}
+	}
+	return left, nil
+}
+
+func (p *Parser) parseUnary() (Expr, error) {
+	if p.check(TokenMinus) {
+		opTok := p.advance()
+		operand, err := p.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		return &Unary{Pos: opTok.Pos, Op: TokenMinus, Operand: operand}, nil
+	}
+	return p.parsePostfix()
+}
+
+func (p *Parser) parsePostfix() (Expr, error) {
+	expr, err := p.parsePrimary()
+	if err != nil {
+		return nil, err
+	}
+
+	for {
+		switch {
+		case p.check(TokenLParen):
+			ident, ok := expr.(*Ident)
+			if !ok {
+				return nil, p.errorf(p.peek().Pos, "вызывать можно только алиас или встроенную функцию")
+			}
+			call, err := p.parseCallArgs(ident)
+			if err != nil {
+				return nil, err
+			}
+			expr = call
+
+		case p.check(TokenLBracket):
+			openTok := p.advance()
+			index, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(TokenRBracket, "после индекса"); err != nil {
+				return nil, err
+			}
+			expr = &Index{Pos: openTok.Pos, Target: expr, Index: index}
+
+		default:
+			return expr, nil
+		}
+	}
+}
+
+func (p *Parser) parseCallArgs(callee *Ident) (*Call, error) {
+	openTok := p.advance() // (
+
+	var args []Expr
+	for !p.check(TokenRParen) {
+		arg, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, arg)
+
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+
+	if _, err := p.expect(TokenRParen, "в списке аргументов"); err != nil {
+		return nil, err
+	}
+	return &Call{Pos: openTok.Pos, Callee: callee, Args: args}, nil
+}
+
+func (p *Parser) parsePrimary() (Expr, error) {
+	tok := p.peek()
+
+	switch tok.Kind {
+	case TokenInt:
+		p.advance()
+		n, err := strconv.ParseInt(tok.Text, 10, 64)
+		if err != nil {
+			return nil, p.errorf(tok.Pos, "не удалось разобрать целое %q: %v", tok.Text, err)
+		}
+		return &Literal{Pos: tok.Pos, Value: IntValue(n)}, nil
+
+	case TokenFloat:
+		p.advance()
+		f, err := strconv.ParseFloat(tok.Text, 64)
+		if err != nil {
+			return nil, p.errorf(tok.Pos, "не удалось разобрать число %q: %v", tok.Text, err)
+		}
+		return &Literal{Pos: tok.Pos, Value: FloatValue(f)}, nil
+
+	case TokenString:
+		p.advance()
+		return &Literal{Pos: tok.Pos, Value: StringValue(tok.Text)}, nil
+
+	case TokenTrue:
+		p.advance()
+		return &Literal{Pos: tok.Pos, Value: BoolValue(true)}, nil
+
+	case TokenFalse:
+		p.advance()
+		return &Literal{Pos: tok.Pos, Value: BoolValue(false)}, nil
+
+	case TokenNull:
+		p.advance()
+		return &Literal{Pos: tok.Pos, Value: NullValue{}}, nil
+
+	case TokenIdent:
+		return p.parseIdent()
+
+	case TokenLParen:
+		p.advance()
+		expr, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenRParen, "— закрывающая скобка"); err != nil {
+			return nil, err
+		}
+		return expr, nil
+
+	case TokenLBracket:
+		return p.parseList()
+	}
+
+	return nil, p.errorf(tok.Pos, "неожиданный %s в выражении", tok)
+}
+
+func (p *Parser) parseIdent() (Expr, error) {
+	nameTok := p.advance()
+
+	// Квалифицированное имя: модуль.алиас
+	if p.check(TokenDot) {
+		p.advance()
+		memberTok, err := p.expect(TokenIdent, "после точки — имя алиаса из модуля")
+		if err != nil {
+			return nil, err
+		}
+		return &Ident{Pos: nameTok.Pos, Module: nameTok.Text, Name: memberTok.Text}, nil
+	}
+
+	return &Ident{Pos: nameTok.Pos, Name: nameTok.Text}, nil
+}
+
+func (p *Parser) parseList() (Expr, error) {
+	openTok := p.advance() // [
+
+	list := &ListLit{Pos: openTok.Pos}
+	for !p.check(TokenRBracket) {
+		element, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		list.Elements = append(list.Elements, element)
+
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+
+	if _, err := p.expect(TokenRBracket, "— закрывающая скобка списка"); err != nil {
+		return nil, err
+	}
+	return list, nil
+}

@@ -23,6 +23,7 @@ type FileManager struct {
 	logsDir      string
 	reportsDir   string
 	snapshotsDir string
+	aliasesDir   string
 }
 
 // NewFileManager создаёт (при необходимости) и возвращает рабочие директории.
@@ -40,9 +41,10 @@ func NewFileManager() (*FileManager, error) {
 		logsDir:      filepath.Join(base, "logs"),
 		reportsDir:   filepath.Join(base, "reports"),
 		snapshotsDir: filepath.Join(base, "snapshots"),
+		aliasesDir:   filepath.Join(base, "aliases"),
 	}
 
-	for _, dir := range []string{fm.scenariosDir, fm.modulesDir, fm.logsDir, fm.reportsDir, fm.snapshotsDir} {
+	for _, dir := range []string{fm.scenariosDir, fm.modulesDir, fm.logsDir, fm.reportsDir, fm.snapshotsDir, fm.aliasesDir} {
 		if err := os.MkdirAll(dir, dirPerm); err != nil {
 			return nil, fmt.Errorf("не удалось создать директорию %s: %w", dir, err)
 		}
@@ -57,6 +59,9 @@ func (fm *FileManager) ModulesDir() string   { return fm.modulesDir }
 func (fm *FileManager) LogsDir() string      { return fm.logsDir }
 func (fm *FileManager) ReportsDir() string   { return fm.reportsDir }
 func (fm *FileManager) SnapshotsDir() string { return fm.snapshotsDir }
+
+// AliasesDir — директория с пользовательскими алиасами (*.ochan).
+func (fm *FileManager) AliasesDir() string { return fm.aliasesDir }
 
 // scenarioPath — единственное место, где формируется путь до сценария.
 // Раньше SaveScenario писал в scenarios/, LoadScenario читал из корня, а

@@ -70,6 +70,9 @@ func init() {
 		listModulesCmd,
 		inspectCmd,
 		saveScenarioCmd,
+		runCmd,
+		evalCmd,
+		aliasesCmd,
 		shellCmd,
 	)
 }

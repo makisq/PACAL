@@ -1,0 +1,250 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+
+	"octochan/core"
+	"octochan/lang"
+
+	"github.com/spf13/cobra"
+)
+
+// Реестр алиасов на процесс. Заполняется лениво: большинству команд
+// алиасы не нужны, а разбор файлов стоит времени.
+var (
+	aliasRegistryOnce sync.Once
+	aliasRegistry     *lang.Registry
+	aliasLoadErrs     []error
+)
+
+// aliases возвращает реестр алиасов и ошибки, накопленные при загрузке.
+//
+// Источники:
+//
+//	~/.octochan/aliases/*.ochan        алиасы пользователя, без префикса
+//	~/.octochan/modules/<пакет>/*.ochan  пакет алиасов, доступен как пакет.алиас
+//	~/.octochan/modules/<пакет>.ochan    однофайловый пакет
+//
+// Пакет алиасов — второй вид модуля наряду с .hcplugin: Go-плагин расширяет
+// octochan новыми командами, а пакет алиасов — готовыми сценариями поверх
+// уже существующих операций. Второй безопаснее: это текст, который видно
+// глазами, и он умеет ровно то, что дают встроенные функции.
+func aliases() (*lang.Registry, []error) {
+	aliasRegistryOnce.Do(func() {
+		aliasRegistry = lang.NewRegistry()
+
+		fm, err := mustFileManager()
+		if err != nil {
+			aliasLoadErrs = append(aliasLoadErrs, err)
+			return
+		}
+
+		if err := aliasRegistry.LoadDir("", fm.AliasesDir()); err != nil {
+			aliasLoadErrs = append(aliasLoadErrs, err)
+		}
+
+		entries, err := os.ReadDir(fm.ModulesDir())
+		if err != nil {
+			if !os.IsNotExist(err) {
+				aliasLoadErrs = append(aliasLoadErrs, err)
+			}
+			return
+		}
+
+		for _, entry := range entries {
+			path := filepath.Join(fm.ModulesDir(), entry.Name())
+
+			switch {
+			case entry.IsDir():
+				if err := aliasRegistry.LoadDir(entry.Name(), path); err != nil {
+					aliasLoadErrs = append(aliasLoadErrs, err)
+				}
+			case filepath.Ext(entry.Name()) == lang.AliasExtension:
+				pkg := strings.TrimSuffix(entry.Name(), lang.AliasExtension)
+				if _, err := aliasRegistry.LoadFile(pkg, path); err != nil {
+					aliasLoadErrs = append(aliasLoadErrs, err)
+				}
+			}
+		}
+	})
+
+	return aliasRegistry, aliasLoadErrs
+}
+
+// reportAliasErrors печатает проблемы загрузки, не прерывая работу:
+// один сломанный пакет не должен блокировать остальные.
+func reportAliasErrors(cmd *cobra.Command, errs []error) {
+	for _, err := range errs {
+		cmd.PrintErrf("⚠️ алиасы: %v\n", err)
+	}
+}
+
+var runCmd = &cobra.Command{
+	Use:   "run <файл.ochan | алиас> [аргументы...]",
+	Short: "Выполнить сценарий или алиас",
+	Args:  cobra.MinimumNArgs(1),
+	Long: "Если первый аргумент — существующий файл, выполняется он.\n" +
+		"Иначе имя трактуется как алиас, а остальные аргументы — как его параметры.\n" +
+		"Числа распознаются автоматически, всё остальное передаётся строкой.",
+	Example: "ochan run сценарий.ochan\n" +
+		"ochan run синхронизировать prod.conf test.conf\n" +
+		"ochan run --eval 'diff(\"a.conf\", \"b.conf\")'",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		registry, errs := aliases()
+		reportAliasErrors(cmd, errs)
+
+		interp := lang.NewInterpreter(cmd.Context(), registry, cmd.OutOrStdout())
+
+		target := args[0]
+		if core.FileExists(target) {
+			return runScriptFile(interp, registry, target)
+		}
+
+		values := make([]lang.Value, 0, len(args)-1)
+		for _, arg := range args[1:] {
+			values = append(values, lang.FromText(arg))
+		}
+
+		result, err := interp.CallAlias(target, values)
+		if err != nil {
+			return err
+		}
+		return printResult(cmd, result)
+	},
+}
+
+// runScriptFile выполняет файл: сначала регистрирует объявленные в нём
+// алиасы, затем выполняет инструкции верхнего уровня.
+func runScriptFile(interp *lang.Interpreter, registry *lang.Registry, path string) error {
+	file, err := registry.LoadFile("", path)
+	if err != nil {
+		return err
+	}
+	return interp.RunFile(file)
+}
+
+func printResult(cmd *cobra.Command, result lang.Value) error {
+	// null — обычный результат алиаса без return, печатать его незачем.
+	if _, isNull := result.(lang.NullValue); isNull {
+		return nil
+	}
+	cmd.Println(lang.Display(result))
+	return nil
+}
+
+var evalExpr string
+
+var evalCmd = &cobra.Command{
+	Use:   "eval <выражение>",
+	Short: "Вычислить выражение языка алиасов",
+	// Аргументы склеиваются обратно в одну строку: оболочки по-разному
+	// разбивают выражение по пробелам и запятым, и требовать от пользователя
+	// точного экранирования ради одной команды незачем.
+	Args:    cobra.ArbitraryArgs,
+	Example: "ochan eval \"diff('prod.conf', 'test.conf')\"",
+	Long: "Строки в языке можно писать и в одинарных кавычках — это удобно,\n" +
+		"когда двойные съедает оболочка (например, Windows PowerShell).",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		source := evalExpr
+		if source == "" && len(args) > 0 {
+			source = strings.Join(args, " ")
+		}
+		if source == "" {
+			return fmt.Errorf("укажите выражение")
+		}
+
+		registry, errs := aliases()
+		reportAliasErrors(cmd, errs)
+
+		file, err := lang.Parse("<eval>", source)
+		if err != nil {
+			return err
+		}
+		for _, decl := range file.Aliases {
+			if err := registry.Add("", decl); err != nil {
+				return err
+			}
+		}
+
+		interp := lang.NewInterpreter(cmd.Context(), registry, cmd.OutOrStdout())
+
+		// Одиночное выражение печатаем: иначе eval был бы бесполезен.
+		if len(file.Stmts) == 1 {
+			if stmt, ok := file.Stmts[0].(*lang.ExprStmt); ok {
+				result, err := interp.EvalExpr(stmt.Expr)
+				if err != nil {
+					return err
+				}
+				return printResult(cmd, result)
+			}
+		}
+		return interp.RunFile(file)
+	},
+}
+
+var aliasesCmd = &cobra.Command{
+	Use:   "aliases [пакет]",
+	Short: "Показать доступные алиасы и встроенные функции",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		registry, errs := aliases()
+		reportAliasErrors(cmd, errs)
+
+		filter := ""
+		if len(args) == 1 {
+			filter = args[0]
+		}
+
+		infos := registry.List()
+		shown := 0
+		currentModule := "\x00" // заведомо не совпадёт с первым пакетом
+
+		for _, info := range infos {
+			if filter != "" && info.Module != filter {
+				continue
+			}
+
+			if info.Module != currentModule {
+				currentModule = info.Module
+				title := "Алиасы пользователя"
+				if info.Module != "" {
+					title = "Пакет " + info.Module
+				}
+				cmd.Printf("\n%s\n", title)
+			}
+
+			cmd.Printf("  %-44s %s\n", info.Signature(), info.Doc)
+			shown++
+		}
+
+		if shown == 0 {
+			fm, err := mustFileManager()
+			if err == nil && filter == "" {
+				cmd.Printf("Алиасов нет. Положите файлы %s в %s\n",
+					lang.AliasExtension, fm.AliasesDir())
+			} else if filter != "" {
+				return fmt.Errorf("пакет алиасов %q не найден", filter)
+			}
+		}
+
+		if filter != "" {
+			return nil
+		}
+
+		cmd.Println("\nВстроенные функции")
+		interp := lang.NewInterpreter(cmd.Context(), registry, cmd.OutOrStdout())
+		builtins := interp.Builtins()
+		for _, name := range interp.BuiltinNames() {
+			cmd.Printf("  %-44s %s\n", builtins[name].Signature(), builtins[name].Doc)
+		}
+		return nil
+	},
+}
+
+func init() {
+	evalCmd.Flags().StringVarP(&evalExpr, "expr", "e", "", "выражение для вычисления")
+}
