@@ -211,6 +211,9 @@ func (in *Interpreter) execStmt(stmt Stmt, env *scope) error {
 	case *For:
 		return in.execFor(s, env)
 
+	case *Try:
+		return in.execTry(s, env)
+
 	case *Return:
 		if s.Value == nil {
 			return returnSignal{value: NullValue{}}
@@ -279,6 +282,10 @@ func (in *Interpreter) execFor(node *For, env *scope) error {
 	items, err := in.iterate(node.Pos, iterable)
 	if err != nil {
 		return err
+	}
+
+	if node.Parallel {
+		return in.execForParallel(node, env, items)
 	}
 
 	for _, item := range items {

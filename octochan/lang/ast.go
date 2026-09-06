@@ -155,6 +155,22 @@ type For struct {
 	Declared TypeName // необязательный тип элемента
 	Iterable Expr
 	Body     *Block
+	// Parallel означает `parallel for`: итерации выполняются одновременно.
+	Parallel bool
+}
+
+// Try — выполнение с перехватом ошибки.
+//
+// Нужен для основного сценария предметной области: раскатать изменение
+// на полсотни серверов, продолжить при отказе двух и отчитаться. Без него
+// первая же неудача обрывала весь сценарий.
+type Try struct {
+	Pos  Position
+	Body *Block
+	// ErrVar — имя переменной, в которую попадёт текст ошибки.
+	// Пустое, если написано `catch { ... }` без имени.
+	ErrVar string
+	Catch  *Block
 }
 
 // Return — возврат значения из алиаса.
@@ -174,6 +190,7 @@ func (s *Assign) Position() Position   { return s.Pos }
 func (s *Block) Position() Position    { return s.Pos }
 func (s *If) Position() Position       { return s.Pos }
 func (s *For) Position() Position      { return s.Pos }
+func (s *Try) Position() Position      { return s.Pos }
 func (s *Return) Position() Position   { return s.Pos }
 func (s *Break) Position() Position    { return s.Pos }
 func (s *Continue) Position() Position { return s.Pos }
@@ -183,6 +200,7 @@ func (*Assign) stmtNode()   {}
 func (*Block) stmtNode()    {}
 func (*If) stmtNode()       {}
 func (*For) stmtNode()      {}
+func (*Try) stmtNode()      {}
 func (*Return) stmtNode()   {}
 func (*Break) stmtNode()    {}
 func (*Continue) stmtNode() {}

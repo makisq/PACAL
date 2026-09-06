@@ -214,7 +214,15 @@ func (p *Parser) parseStatement() (Stmt, error) {
 	case TokenIf:
 		return p.parseIf()
 	case TokenFor:
-		return p.parseFor()
+		return p.parseFor(false)
+	case TokenParallel:
+		parallelTok := p.advance()
+		if !p.check(TokenFor) {
+			return nil, p.errorf(parallelTok.Pos, "после parallel ожидается for")
+		}
+		return p.parseFor(true)
+	case TokenTry:
+		return p.parseTry()
 	case TokenReturn:
 		return p.parseReturn()
 	case TokenBreak:
@@ -324,7 +332,41 @@ func (p *Parser) parseIf() (Stmt, error) {
 	return node, nil
 }
 
-func (p *Parser) parseFor() (Stmt, error) {
+// parseTry разбирает try { ... } catch [имя] { ... }.
+//
+// Ветка catch обязательна: try без неё означал бы «проглотить ошибку молча»,
+// а это ровно то поведение, из-за которого сбои остаются незамеченными.
+func (p *Parser) parseTry() (Stmt, error) {
+	tryTok := p.advance()
+
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+
+	p.skipNewlines()
+	if _, err := p.expect(TokenCatch, "после блока try"); err != nil {
+		return nil, err
+	}
+
+	node := &Try{Pos: tryTok.Pos, Body: body}
+
+	// Имя переменной необязательно: catch { ... } тоже допустим,
+	// если текст ошибки не нужен.
+	if p.check(TokenIdent) {
+		node.ErrVar = p.advance().Text
+	}
+
+	catchBlock, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	node.Catch = catchBlock
+
+	return node, nil
+}
+
+func (p *Parser) parseFor(parallel bool) (Stmt, error) {
 	forTok := p.advance()
 
 	varTok, err := p.expect(TokenIdent, "— переменная цикла")
@@ -357,6 +399,7 @@ func (p *Parser) parseFor() (Stmt, error) {
 		Declared: declared,
 		Iterable: iterable,
 		Body:     body,
+		Parallel: parallel,
 	}, nil
 }
 

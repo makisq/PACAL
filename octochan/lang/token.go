@@ -28,6 +28,9 @@ const (
 	TokenFor
 	TokenIn
 	TokenReturn
+	TokenTry
+	TokenCatch
+	TokenParallel
 	TokenBreak
 	TokenContinue
 	TokenAnd
@@ -76,6 +79,9 @@ var tokenNames = map[TokenKind]string{
 	TokenFor:       "for",
 	TokenIn:        "in",
 	TokenReturn:    "return",
+	TokenTry:       "try",
+	TokenCatch:     "catch",
+	TokenParallel:  "parallel",
 	TokenBreak:     "break",
 	TokenContinue:  "continue",
 	TokenAnd:       "and",
@@ -125,6 +131,9 @@ var keywords = map[string]TokenKind{
 	"for":      TokenFor,
 	"in":       TokenIn,
 	"return":   TokenReturn,
+	"try":      TokenTry,
+	"catch":    TokenCatch,
+	"parallel": TokenParallel,
 	"break":    TokenBreak,
 	"continue": TokenContinue,
 	"and":      TokenAnd,
