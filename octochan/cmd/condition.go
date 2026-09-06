@@ -67,14 +67,11 @@ ochan> else config.conf server.port != 8080 "Исправьте порт на 80
 func runCondition(cmd *cobra.Command, args []string) (bool, error) {
 	filePath, paramPath, operator, expected, message := args[0], args[1], args[2], args[3], args[4]
 
-	src, err := readSource(filePath)
+	src, err := loadConfigArg(cmd.Context(), filePath, core.SourceOptions{})
 	if err != nil {
 		return false, err
 	}
-	cfg, err := core.ParseConfig(src.Content)
-	if err != nil {
-		return false, fmt.Errorf("%s: %w", src.Name, err)
-	}
+	cfg := src.Data
 
 	section, key := splitParamPath(paramPath)
 	current, exists := cfg[section][key]

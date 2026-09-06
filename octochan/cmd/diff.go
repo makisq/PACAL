@@ -10,51 +10,59 @@ import (
 )
 
 var (
-	fastMode   bool
-	noSnapshot bool
+	fastMode        bool
+	noSnapshot      bool
+	includeDefaults bool
 )
 
 var diffCmd = &cobra.Command{
-	Use:     "diff <file1> <file2>",
-	Short:   "Сравнить два конфигурационных файла",
-	Example: "ochan diff prod.conf test.conf\ncat prod.conf | ochan diff - test.conf",
-	Args:    cobra.RangeArgs(1, 2),
+	Use:   "diff <источник1> <источник2>",
+	Short: "Сравнить две конфигурации",
+	Long: "Источником может быть файл, \"-\" для stdin или живой сервер,\n" +
+		"например postgres://user@host:5432/postgres.\n\n" +
+		"Для живого PostgreSQL читается pg_settings, а не postgresql.conf:\n" +
+		"поверх файла действуют ALTER SYSTEM, include и параметры командной\n" +
+		"строки, поэтому файл не отражает того, как сервер работает на самом деле.",
+	Example: "ochan diff prod.conf test.conf\n" +
+		"ochan diff эталон.conf postgres://dba@db1:5432/postgres\n" +
+		"cat prod.conf | ochan diff - test.conf",
+	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fm, err := mustFileManager()
 		if err != nil {
 			return err
 		}
 
-		left, err := readSource(args[0])
+		opts := core.SourceOptions{IncludeDefaults: includeDefaults}
+		ctx := cmd.Context()
+
+		left, err := loadConfigArg(ctx, args[0], opts)
 		if err != nil {
 			return err
 		}
 
-		rightPath, err := argOrStdin(args, 1)
+		rightRef, err := argOrStdin(args, 1)
 		if err != nil {
-			return fmt.Errorf("для сравнения нужен второй файл: %w", err)
+			return fmt.Errorf("для сравнения нужен второй источник: %w", err)
 		}
-		if left.Name == "stdin" && rightPath == "-" {
-			return fmt.Errorf("нельзя использовать stdin для обоих файлов")
+		if left.Name == "stdin" && rightRef == "-" {
+			return fmt.Errorf("нельзя использовать stdin для обеих сторон")
 		}
 
-		right, err := readSource(rightPath)
+		right, err := loadConfigArg(ctx, rightRef, opts)
 		if err != nil {
 			return err
 		}
 
-		leftCfg, err := core.ParseConfig(left.Content)
-		if err != nil {
-			return fmt.Errorf("%s: %w", left.Name, err)
-		}
-		rightCfg, err := core.ParseConfig(right.Content)
-		if err != nil {
-			return fmt.Errorf("%s: %w", right.Name, err)
+		// Замечания источника важнее самих расхождений: сервер может
+		// выглядеть настроенным, но работать по-старому, пока не перезапущен.
+		for _, note := range append(append([]string{}, left.Notes...), right.Notes...) {
+			cmd.Printf("⚠️ %s\n", note)
 		}
 
-		diff := core.CompareConfigs(leftCfg, rightCfg, left.Name, right.Name)
+		diff := core.CompareConfigs(left.Data, right.Data, left.Name, right.Name)
 		if diff.Len() == 0 {
-			cmd.Println("Файлы идентичны — различий не найдено.")
+			cmd.Println("Источники идентичны — различий не найдено.")
 			return nil
 		}
 
@@ -107,4 +115,6 @@ func init() {
 		"только вывод в консоль, без отчёта и снапшота")
 	diffCmd.Flags().BoolVar(&noSnapshot, "no-snapshot", false,
 		"не создавать снапшот")
+	diffCmd.Flags().BoolVar(&includeDefaults, "all", false,
+		"для живых источников включать параметры со значением по умолчанию")
 }

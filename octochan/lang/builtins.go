@@ -1,6 +1,7 @@
 package lang
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -140,8 +141,8 @@ func DefaultBuiltins() map[string]Builtin {
 			Fn:  builtinNormalize,
 		},
 		{
-			Name: "config", MinArgs: 1, MaxArgs: 1,
-			Doc: "разобрать конфиг один раз и держать в переменной",
+			Name: "config", MinArgs: 1, MaxArgs: 2,
+			Doc: "разобрать источник один раз: файл, текст или postgres://user@host/db",
 			Fn:  builtinConfig,
 		},
 		{
@@ -203,8 +204,27 @@ func DefaultBuiltins() map[string]Builtin {
 // и заведён: сценарий из трёх обращений к одному файлу раньше парсил его
 // трижды.
 func configOf(v Value) (ConfigValue, error) {
+	return configOfCtx(context.Background(), v, core.SourceOptions{})
+}
+
+func configOfCtx(ctx context.Context, v Value, opts core.SourceOptions) (ConfigValue, error) {
 	if cfg, ok := v.(ConfigValue); ok {
 		return cfg, nil
+	}
+
+	s, ok := v.(StringValue)
+	if !ok {
+		return ConfigValue{}, fmt.Errorf("ожидался конфиг, путь к файлу или текст, получено %s", v.TypeName())
+	}
+
+	// Ссылка на живой источник: postgres://user@host:5432/db и что угодно
+	// другое, что зарегистрирует свою схему.
+	if core.SourceScheme(string(s)) != "" {
+		loaded, err := core.LoadConfigFrom(ctx, string(s), opts)
+		if err != nil {
+			return ConfigValue{}, err
+		}
+		return ConfigValue{Name: loaded.Name, Data: loaded.Data, Notes: loaded.Notes}, nil
 	}
 
 	text, name, err := textOf(v)
@@ -240,8 +260,32 @@ func textOf(v Value) (string, string, error) {
 	return string(data), path, nil
 }
 
-func builtinConfig(_ *Interpreter, args []Value) (Value, error) {
-	return configOf(args[0])
+// builtinConfig принимает необязательный второй аргумент "all", чтобы
+// у живого сервера читать и параметры со значением по умолчанию.
+func builtinConfig(in *Interpreter, args []Value) (Value, error) {
+	var opts core.SourceOptions
+	if len(args) == 2 {
+		mode := strings.ToLower(strings.TrimSpace(args[1].Text()))
+		switch mode {
+		case "all", "все", "всё":
+			opts.IncludeDefaults = true
+		case "", "set", "заданные":
+		default:
+			return nil, fmt.Errorf("неизвестный режим %q; допустимо \"all\"", args[1].Text())
+		}
+	}
+
+	cfg, err := configOfCtx(in.Context(), args[0], opts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Замечания источника показываем сразу: параметр, ждущий перезапуска,
+	// меняет смысл всего сравнения.
+	for _, note := range cfg.Notes {
+		fmt.Fprintf(in.Out(), "⚠️ %s\n", note)
+	}
+	return cfg, nil
 }
 
 func builtinDiff(_ *Interpreter, args []Value) (Value, error) {

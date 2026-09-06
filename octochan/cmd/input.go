@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"sync"
+
+	"octochan/core"
 )
 
 // Прежняя схема конвейеров была двухслойной и нерабочей:
@@ -60,6 +63,20 @@ func readSource(path string) (source, error) {
 		return source{}, fmt.Errorf("не удалось прочитать %s: %w", path, err)
 	}
 	return source{Name: path, Content: string(data)}, nil
+}
+
+// loadConfigArg загружает конфиг из аргумента команды: это может быть
+// путь к файлу, "-" для stdin или ссылка на живой источник вида
+// postgres://user@host:5432/db.
+func loadConfigArg(ctx context.Context, ref string, opts core.SourceOptions) (*core.LoadedConfig, error) {
+	if ref == "-" {
+		data, err := readStdin()
+		if err != nil {
+			return nil, err
+		}
+		return core.LoadConfigFromText("stdin", string(data))
+	}
+	return core.LoadConfigFrom(ctx, ref, opts)
 }
 
 // argOrStdin возвращает аргумент по индексу, а при его отсутствии — "-",

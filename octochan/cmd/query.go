@@ -33,14 +33,11 @@ var findCmd = &cobra.Command{
 			param = args[1]
 		}
 
-		src, err := readSource(path)
+		src, err := loadConfigArg(cmd.Context(), path, core.SourceOptions{})
 		if err != nil {
 			return err
 		}
-		cfg, err := core.ParseConfig(src.Content)
-		if err != nil {
-			return err
-		}
+		cfg := src.Data
 
 		found := 0
 		for _, section := range sortedSections(cfg) {
@@ -70,21 +67,21 @@ var statsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		src, err := readSource(path)
+		src, err := loadConfigArg(cmd.Context(), path, core.SourceOptions{})
 		if err != nil {
 			return err
 		}
-		cfg, err := core.ParseConfig(src.Content)
-		if err != nil {
-			return err
-		}
+		cfg := src.Data
 
 		total := 0
 		for _, params := range cfg {
 			total += len(params)
 		}
 
-		cmd.Printf("Файл: %s\n", src.Name)
+		for _, note := range src.Notes {
+			cmd.Printf("⚠️ %s\n", note)
+		}
+		cmd.Printf("Источник: %s\n", src.Name)
 		cmd.Printf("Секций: %d\n", len(cfg))
 		cmd.Printf("Параметров: %d\n", total)
 		for _, section := range sortedSections(cfg) {
@@ -107,14 +104,11 @@ var validateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		src, err := readSource(path)
+		src, err := loadConfigArg(cmd.Context(), path, core.SourceOptions{})
 		if err != nil {
 			return err
 		}
-		cfg, err := core.ParseConfig(src.Content)
-		if err != nil {
-			return fmt.Errorf("%s: %w", src.Name, err)
-		}
+		cfg := src.Data
 
 		total := 0
 		for _, params := range cfg {
