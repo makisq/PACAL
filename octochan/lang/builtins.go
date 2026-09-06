@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"octochan/core"
+	"octochan/config"
 )
 
 // Builtin — встроенная функция языка.
@@ -204,10 +204,10 @@ func DefaultBuiltins() map[string]Builtin {
 // и заведён: сценарий из трёх обращений к одному файлу раньше парсил его
 // трижды.
 func configOf(v Value) (ConfigValue, error) {
-	return configOfCtx(context.Background(), v, core.SourceOptions{})
+	return configOfCtx(context.Background(), v, config.SourceOptions{})
 }
 
-func configOfCtx(ctx context.Context, v Value, opts core.SourceOptions) (ConfigValue, error) {
+func configOfCtx(ctx context.Context, v Value, opts config.SourceOptions) (ConfigValue, error) {
 	if cfg, ok := v.(ConfigValue); ok {
 		return cfg, nil
 	}
@@ -219,8 +219,8 @@ func configOfCtx(ctx context.Context, v Value, opts core.SourceOptions) (ConfigV
 
 	// Ссылка на живой источник: postgres://user@host:5432/db и что угодно
 	// другое, что зарегистрирует свою схему.
-	if core.SourceScheme(string(s)) != "" {
-		loaded, err := core.LoadConfigFrom(ctx, string(s), opts)
+	if config.SourceScheme(string(s)) != "" {
+		loaded, err := config.LoadConfigFrom(ctx, string(s), opts)
 		if err != nil {
 			return ConfigValue{}, err
 		}
@@ -232,7 +232,7 @@ func configOfCtx(ctx context.Context, v Value, opts core.SourceOptions) (ConfigV
 		return ConfigValue{}, err
 	}
 
-	data, err := core.ParseConfig(text)
+	data, err := config.ParseConfig(text)
 	if err != nil {
 		return ConfigValue{}, fmt.Errorf("%s: %w", name, err)
 	}
@@ -263,7 +263,7 @@ func textOf(v Value) (string, string, error) {
 // builtinConfig принимает необязательный второй аргумент "all", чтобы
 // у живого сервера читать и параметры со значением по умолчанию.
 func builtinConfig(in *Interpreter, args []Value) (Value, error) {
-	var opts core.SourceOptions
+	var opts config.SourceOptions
 	if len(args) == 2 {
 		mode := strings.ToLower(strings.TrimSpace(args[1].Text()))
 		switch mode {
@@ -293,7 +293,7 @@ func builtinDiff(_ *Interpreter, args []Value) (Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	return IntValue(core.CompareConfigs(left.Data, right.Data, left.Name, right.Name).Len()), nil
+	return IntValue(config.CompareConfigs(left.Data, right.Data, left.Name, right.Name).Len()), nil
 }
 
 func builtinDiffList(_ *Interpreter, args []Value) (Value, error) {
@@ -302,7 +302,7 @@ func builtinDiffList(_ *Interpreter, args []Value) (Value, error) {
 		return nil, err
 	}
 
-	diff := core.CompareConfigs(left.Data, right.Data, left.Name, right.Name)
+	diff := config.CompareConfigs(left.Data, right.Data, left.Name, right.Name)
 	names := make(ListValue, 0, diff.Len())
 	for _, entry := range diff.Entries {
 		names = append(names, StringValue(entry.Param()))
@@ -360,7 +360,7 @@ func builtinValidate(_ *Interpreter, args []Value) (Value, error) {
 }
 
 func builtinNormalize(_ *Interpreter, args []Value) (Value, error) {
-	return StringValue(core.NormalizeValue(args[0].Text())), nil
+	return StringValue(config.NormalizeValue(args[0].Text())), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -515,7 +515,7 @@ func builtinMerge(_ *Interpreter, args []Value) (Value, error) {
 
 		merged := ConfigValue{
 			Name: left.Name + "+" + right.Name,
-			Data: make(core.ConfigMap, len(left.Data)),
+			Data: make(config.ConfigMap, len(left.Data)),
 		}
 		for _, source := range []ConfigValue{left, right} {
 			for section, params := range source.Data {
@@ -541,7 +541,7 @@ func builtinSave(_ *Interpreter, args []Value) (Value, error) {
 	}
 
 	path := args[1].Text()
-	if err := core.SaveConfig(cfg.Data, path); err != nil {
+	if err := config.SaveConfig(cfg.Data, path); err != nil {
 		return nil, err
 	}
 	return IntValue(cfg.Params()), nil
@@ -578,7 +578,7 @@ func builtinWrite(_ *Interpreter, args []Value) (Value, error) {
 }
 
 func builtinExists(_ *Interpreter, args []Value) (Value, error) {
-	return BoolValue(core.FileExists(args[0].Text())), nil
+	return BoolValue(config.FileExists(args[0].Text())), nil
 }
 
 // ---------------------------------------------------------------------------

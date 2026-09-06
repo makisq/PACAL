@@ -1,9 +1,10 @@
-package core
+package workspace
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -68,6 +69,14 @@ func (fm *FileManager) AliasesDir() string { return fm.aliasesDir }
 // HistoryDir — журнал выполненных операций.
 func (fm *FileManager) HistoryDir() string { return fm.historyDir }
 
+// TokenFilePath — файл с токеном внешней системы.
+//
+// Сам токен читает и пишет пакет rlm: где лежат рабочие директории — забота
+// этого пакета, а что именно в них хранится — забота владельца данных.
+func (fm *FileManager) TokenFilePath() string {
+	return filepath.Join(fm.baseDir, ".env")
+}
+
 // scenarioPath — единственное место, где формируется путь до сценария.
 // Раньше SaveScenario писал в scenarios/, LoadScenario читал из корня, а
 // команда srs печатала третий вариант пути.
@@ -115,26 +124,45 @@ func (fm *FileManager) ModulePath(name string) (string, error) {
 
 // InstallHashicorpModule кладёт плагин в директорию модулей.
 //
-// Вызывающий обязан сначала выгрузить модуль с этим путём: Windows держит
-// файл работающего процесса заблокированным, и переустановка уже загруженного
-// модуля падала с "The process cannot access the file".
+// Прямая перезапись на Windows не годится: пока файл отображён как образ
+// работающего процесса, открыть его на запись нельзя. Переименовать —
+// можно, и этим мы пользуемся: старый файл отодвигается в сторону, новый
+// пишется на освободившееся место, а отодвинутый удаляется, когда система
+// его отпустит. Один такой хвост не мешает работе и подбирается при
+// следующей установке.
 func (fm *FileManager) InstallHashicorpModule(name string, data []byte) (string, error) {
 	path, err := fm.ModulePath(name)
 	if err != nil {
 		return "", err
 	}
 
-	// После Kill() операционной системе нужно немного времени, чтобы
-	// освободить дескриптор завершившегося процесса.
-	var lastErr error
-	for attempt := 0; attempt < 10; attempt++ {
-		if attempt > 0 {
-			time.Sleep(50 * time.Millisecond)
+	fm.sweepStaleModules()
+
+	if _, err := os.Stat(path); err == nil {
+		stale := fmt.Sprintf("%s.stale-%d", path, time.Now().UnixNano())
+		if err := os.Rename(path, stale); err != nil {
+			return "", fmt.Errorf("не удалось освободить %s: %w", filepath.Base(path), err)
 		}
-		if lastErr = os.WriteFile(path, data, executablePerm); lastErr == nil {
-			return path, nil
-		}
+		// Удаление может не пройти прямо сейчас — файл подберёт следующая
+		// установка. Это лучше, чем отказать в установке целиком.
+		_ = os.Remove(stale)
 	}
 
-	return "", fmt.Errorf("не удалось установить модуль: %w", lastErr)
+	if err := os.WriteFile(path, data, executablePerm); err != nil {
+		return "", fmt.Errorf("не удалось установить модуль: %w", err)
+	}
+	return path, nil
+}
+
+// sweepStaleModules убирает файлы, отодвинутые прошлыми установками.
+func (fm *FileManager) sweepStaleModules() {
+	entries, err := os.ReadDir(fm.modulesDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".stale-") {
+			_ = os.Remove(filepath.Join(fm.modulesDir, entry.Name()))
+		}
+	}
 }

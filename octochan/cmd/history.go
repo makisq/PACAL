@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"octochan/core"
+	"octochan/config"
+	"octochan/workspace"
 
 	"github.com/spf13/cobra"
 )
@@ -12,17 +13,17 @@ import (
 var historyLimit int
 
 // historyStore открывает журнал операций.
-func historyStore() (*core.History, error) {
+func historyStore() (*workspace.History, error) {
 	fm, err := mustFileManager()
 	if err != nil {
 		return nil, err
 	}
-	return core.NewHistory(fm.HistoryDir())
+	return workspace.NewHistory(fm.HistoryDir())
 }
 
 // record записывает событие, не прерывая работу при сбое записи:
 // неудача журналирования не должна отменять уже выполненное действие.
-func record(cmd *cobra.Command, entry *core.Entry) {
+func record(cmd *cobra.Command, entry *workspace.Entry) {
 	store, err := historyStore()
 	if err != nil {
 		cmd.PrintErrf("⚠️ история недоступна: %v\n", err)
@@ -74,7 +75,7 @@ var historyCmd = &cobra.Command{
 	},
 }
 
-func showHistoryEntry(cmd *cobra.Command, store *core.History, id string) error {
+func showHistoryEntry(cmd *cobra.Command, store *workspace.History, id string) error {
 	entry, err := store.Get(id)
 	if err != nil {
 		return err
@@ -108,7 +109,7 @@ func showHistoryEntry(cmd *cobra.Command, store *core.History, id string) error 
 	}
 
 	if len(entry.Changes) > 0 {
-		plan := &core.Plan{Changes: entry.Changes}
+		plan := &config.Plan{Changes: entry.Changes}
 		cmd.Print("\n" + plan.Render(60))
 	}
 	return nil
@@ -149,17 +150,17 @@ var rollbackCmd = &cobra.Command{
 
 		// Текущее содержимое запоминаем до перезаписи: откат сам является
 		// изменением, и его тоже нужно уметь отменить.
-		var current core.ConfigMap
-		if loaded, err := core.LoadConfigFrom(cmd.Context(), entry.Target, core.SourceOptions{}); err == nil {
+		var current config.ConfigMap
+		if loaded, err := config.LoadConfigFrom(cmd.Context(), entry.Target, config.SourceOptions{}); err == nil {
 			current = loaded.Data
 		}
 
-		if err := core.SaveConfig(entry.Before, entry.Target); err != nil {
+		if err := config.SaveConfig(entry.Before, entry.Target); err != nil {
 			return err
 		}
 
-		revert := &core.Entry{
-			Kind:       core.EntryPatch,
+		revert := &workspace.Entry{
+			Kind:       workspace.EntryPatch,
 			Command:    "rollback " + entry.ID,
 			Target:     entry.Target,
 			Source:     "история " + entry.ID,

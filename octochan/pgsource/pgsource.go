@@ -18,14 +18,14 @@ import (
 	"strconv"
 	"strings"
 
-	"octochan/core"
+	"octochan/config"
 
 	"github.com/jackc/pgx/v5"
 )
 
 func init() {
-	core.RegisterSourceScheme("postgres", Load)
-	core.RegisterSourceScheme("postgresql", Load)
+	config.RegisterSourceScheme("postgres", Load)
+	config.RegisterSourceScheme("postgresql", Load)
 }
 
 // settingsQuery берёт только то, что действительно является конфигурацией.
@@ -55,7 +55,7 @@ WHERE $1 OR (source <> 'default'
 ORDER BY name`
 
 // Load подключается к серверу и читает его действующую конфигурацию.
-func Load(ctx context.Context, dsn string, opts core.SourceOptions) (*core.LoadedConfig, error) {
+func Load(ctx context.Context, dsn string, opts config.SourceOptions) (*config.LoadedConfig, error) {
 	connConfig, display, err := parseDSN(dsn)
 	if err != nil {
 		return nil, err
@@ -94,11 +94,11 @@ func Load(ctx context.Context, dsn string, opts core.SourceOptions) (*core.Loade
 		return nil, fmt.Errorf("ошибка чтения pg_settings на %s: %w", display, err)
 	}
 
-	loaded := &core.LoadedConfig{
+	loaded := &config.LoadedConfig{
 		Name: display,
 		// В postgresql.conf секций нет, поэтому всё кладём в безымянную —
 		// так живой сервер и файл сравниваются напрямую.
-		Data: core.ConfigMap{"": params},
+		Data: config.ConfigMap{"": params},
 	}
 
 	if len(pendingRestart) > 0 {

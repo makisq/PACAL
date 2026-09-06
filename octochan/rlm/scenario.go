@@ -1,4 +1,4 @@
-package core
+package rlm
 
 import (
 	"context"
@@ -11,6 +11,8 @@ import (
 
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
+
+	"octochan/config"
 )
 
 // APIRequest — подготовленный модулем запрос к RLM API.
@@ -269,7 +271,7 @@ func buildModule(data *ScenarioData) (ScenarioModule, error) {
 // к API уже на этапе подготовки, и без запрета «показать план» создавало бы
 // задачи разведки. Если модуль упирается в этот запрет, план получается
 // неполным — и об этом говорится прямо, а не замалчивается.
-func PlanScenario(ctx context.Context, api ScenarioAPI, scenarioData []byte, customParams map[string]string) (*Plan, error) {
+func PlanScenario(ctx context.Context, api ScenarioAPI, scenarioData []byte, customParams map[string]string) (*config.Plan, error) {
 	if len(scenarioData) == 0 {
 		return nil, errors.New("пустые данные сценария")
 	}
@@ -287,7 +289,7 @@ func PlanScenario(ctx context.Context, api ScenarioAPI, scenarioData []byte, cus
 		return nil, err
 	}
 
-	plan := &Plan{
+	plan := &config.Plan{
 		Command:     "apply --rlm",
 		Source:      data.Service,
 		Destructive: isDestructiveService(data.Service),
@@ -307,8 +309,8 @@ func PlanScenario(ctx context.Context, api ScenarioAPI, scenarioData []byte, cus
 			"неполный: показаны цели, но не итоговые параметры", data.Service)
 		for _, target := range data.Targets {
 			for _, ci := range target.GetCIs() {
-				plan.Add(Change{
-					Kind:   ChangeTask,
+				plan.Add(config.Change{
+					Kind:   config.ChangeTask,
 					Target: ci,
 					Name:   data.Service,
 					Detail: "состав запроса определится после разведки",
@@ -320,8 +322,8 @@ func PlanScenario(ctx context.Context, api ScenarioAPI, scenarioData []byte, cus
 	}
 
 	for i, req := range requests {
-		plan.Add(Change{
-			Kind:   ChangeTask,
+		plan.Add(config.Change{
+			Kind:   config.ChangeTask,
 			Target: requestTarget(req, i),
 			Name:   data.Service,
 			Detail: describeRequestParams(req),

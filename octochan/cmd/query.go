@@ -5,7 +5,7 @@ import (
 	"os"
 	"sort"
 
-	"octochan/core"
+	"octochan/config"
 
 	"github.com/spf13/cobra"
 )
@@ -33,7 +33,7 @@ var findCmd = &cobra.Command{
 			param = args[1]
 		}
 
-		src, err := loadConfigArg(cmd.Context(), path, core.SourceOptions{})
+		src, err := loadConfigArg(cmd.Context(), path, config.SourceOptions{})
 		if err != nil {
 			return err
 		}
@@ -67,7 +67,7 @@ var statsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		src, err := loadConfigArg(cmd.Context(), path, core.SourceOptions{})
+		src, err := loadConfigArg(cmd.Context(), path, config.SourceOptions{})
 		if err != nil {
 			return err
 		}
@@ -104,7 +104,7 @@ var validateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		src, err := loadConfigArg(cmd.Context(), path, core.SourceOptions{})
+		src, err := loadConfigArg(cmd.Context(), path, config.SourceOptions{})
 		if err != nil {
 			return err
 		}
@@ -162,7 +162,7 @@ var teeCmd = &cobra.Command{
 	},
 }
 
-func sortedSections(cfg core.ConfigMap) []string {
+func sortedSections(cfg config.ConfigMap) []string {
 	sections := make([]string, 0, len(cfg))
 	for section := range cfg {
 		sections = append(sections, section)

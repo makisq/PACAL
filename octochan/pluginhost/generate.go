@@ -1,6 +1,6 @@
-package core
+package pluginhost
 
-// Перегенерация gRPC-кода из core/command.proto.
+// Перегенерация gRPC-кода из pluginhost/command.proto.
 //
 // Версии генераторов закреплены намеренно: protoc-gen-go должен совпадать
 // с google.golang.org/protobuf из go.mod, иначе сгенерированный файл
@@ -16,4 +16,4 @@ package core
 //
 //	go generate ./core/...
 
-//go:generate protoc -I.. --go_out=.. --go_opt=paths=source_relative --go-grpc_out=.. --go-grpc_opt=paths=source_relative core/command.proto
+//go:generate protoc -I.. --go_out=.. --go_opt=paths=source_relative --go-grpc_out=.. --go-grpc_opt=paths=source_relative pluginhost/command.proto

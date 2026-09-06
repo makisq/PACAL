@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"octochan/core"
+	"octochan/config"
+	"octochan/rlm"
+	"octochan/workspace"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -41,7 +43,7 @@ func applyPlainConfig(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := core.ParseConfig(src.Content)
+	cfg, err := config.ParseConfig(src.Content)
 	if err != nil {
 		return fmt.Errorf("%s: %w", src.Name, err)
 	}
@@ -77,7 +79,7 @@ func applyRLMScenario(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	client, err := core.NewAPIClient()
+	client, err := rlm.NewAPIClient()
 	if err != nil {
 		return err
 	}
@@ -85,7 +87,7 @@ func applyRLMScenario(cmd *cobra.Command, args []string) error {
 	log.Printf("apply: запуск сценария %s", src.Name)
 
 	ctx := cmd.Context()
-	taskIDs, err := core.ExecuteScenario(ctx, client, []byte(src.Content), customParams)
+	taskIDs, err := rlm.ExecuteScenario(ctx, client, []byte(src.Content), customParams)
 
 	if len(taskIDs) > 0 {
 		cmd.Println("✅ Созданные задачи:")
@@ -95,8 +97,8 @@ func applyRLMScenario(cmd *cobra.Command, args []string) error {
 
 		// Задачи во внешней системе необратимы: перезапуск уже произошёл,
 		// и отменять в октохане нечего. Но след остаться обязан.
-		record(cmd, &core.Entry{
-			Kind:       core.EntryApply,
+		record(cmd, &workspace.Entry{
+			Kind:       workspace.EntryApply,
 			Command:    "apply --rlm",
 			Source:     src.Name,
 			Summary:    fmt.Sprintf("создано задач: %d", len(taskIDs)),
@@ -117,7 +119,7 @@ func applyRLMScenario(cmd *cobra.Command, args []string) error {
 
 	cmd.Println("\n🔄 Ожидание завершения задач...")
 	for _, taskID := range taskIDs {
-		status, err := client.WaitForTask(ctx, taskID, core.WaitOptions{
+		status, err := client.WaitForTask(ctx, taskID, rlm.WaitOptions{
 			OnStatus: func(s string) { cmd.Printf("  %s: %s\n", taskID, s) },
 		})
 		if err != nil {
@@ -150,7 +152,7 @@ var statusCmd = &cobra.Command{
 	Short: "Проверить статус выполнения задачи",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, err := core.NewAPIClient()
+		client, err := rlm.NewAPIClient()
 		if err != nil {
 			return err
 		}
@@ -205,7 +207,7 @@ var saveScenarioCmd = &cobra.Command{
 		}
 
 		// Проверяем сценарий до сохранения, чтобы в хранилище не оседал мусор.
-		if _, err := core.ParseScenarioData([]byte(src.Content)); err != nil {
+		if _, err := rlm.ParseScenarioData([]byte(src.Content)); err != nil {
 			return fmt.Errorf("сценарий не прошёл проверку: %w", err)
 		}
 

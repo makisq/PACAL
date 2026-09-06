@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"octochan/core"
+	"octochan/config"
+	"octochan/workspace"
 
 	"github.com/spf13/cobra"
 )
@@ -23,7 +24,7 @@ var patchCmd = &cobra.Command{
 	Example: "ochan patch prod.conf changes.conf -o patched.conf",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-		opts := core.SourceOptions{}
+		opts := config.SourceOptions{}
 
 		base, err := loadConfigArg(ctx, args[0], opts)
 		if err != nil {
@@ -37,8 +38,8 @@ var patchCmd = &cobra.Command{
 		// Патч — это применение плана: в файл переносятся только настоящие
 		// изменения, и ровно они попадают в историю. Раньше копировались
 		// все параметры подряд, включая совпадающие.
-		diff := core.CompareConfigs(base.Data, changes.Data, base.Name, changes.Name)
-		plan := core.PlanFromDiff(diff, base.Name)
+		diff := config.CompareConfigs(base.Data, changes.Data, base.Name, changes.Name)
+		plan := config.PlanFromDiff(diff, base.Name)
 		plan.Command = "patch"
 		plan.Source = changes.Name
 
@@ -50,12 +51,12 @@ var patchCmd = &cobra.Command{
 		}
 
 		// Состояние до записи сохраняем целиком: по нему работает rollback.
-		var before core.ConfigMap
+		var before config.ConfigMap
 		if _, statErr := os.Stat(output); statErr == nil {
 			if !patchForce {
 				return fmt.Errorf("файл %s уже существует, используйте --force для перезаписи", output)
 			}
-			if loaded, err := core.LoadConfigFrom(ctx, output, opts); err == nil {
+			if loaded, err := config.LoadConfigFrom(ctx, output, opts); err == nil {
 				before = loaded.Data
 			}
 		}
@@ -65,13 +66,13 @@ var patchCmd = &cobra.Command{
 			return nil
 		}
 
-		result := core.ApplyPlan(base.Data, plan)
-		if err := core.SaveConfig(result, output); err != nil {
+		result := config.ApplyPlan(base.Data, plan)
+		if err := config.SaveConfig(result, output); err != nil {
 			return err
 		}
 
-		record(cmd, &core.Entry{
-			Kind:    core.EntryPatch,
+		record(cmd, &workspace.Entry{
+			Kind:    workspace.EntryPatch,
 			Command: "patch",
 			Source:  changes.Name,
 			Target:  output,

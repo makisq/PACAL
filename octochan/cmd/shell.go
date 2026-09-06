@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"octochan/core"
+	"octochan/pluginhost"
 
 	"github.com/c-bata/go-prompt"
 	"github.com/spf13/cobra"
@@ -70,7 +70,7 @@ func runInteractiveShell(ctx context.Context) error {
 // из оболочки они оставались висеть.
 func exitShell() {
 	stopTokenReminder()
-	core.GetModuleManager().Cleanup()
+	pluginhost.GetModuleManager().Cleanup()
 	os.Exit(0)
 }
 

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"octochan/core"
+	"octochan/pluginhost"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
@@ -35,7 +35,7 @@ func loadModules() {
 			return
 		}
 
-		if err := core.GetModuleManager().LoadModulesFromDir(fm.ModulesDir()); err != nil {
+		if err := pluginhost.GetModuleManager().LoadModulesFromDir(fm.ModulesDir()); err != nil {
 			log.Printf("ошибки при загрузке модулей: %v", err)
 			fmt.Fprintf(os.Stderr, "⚠️ Часть модулей не загружена: %v\n", err)
 		}
@@ -52,7 +52,7 @@ func registerModuleCommands() {
 		existing[c.Name()] = true
 	}
 
-	for _, moduleCmd := range core.GetModuleManager().GetCommands() {
+	for _, moduleCmd := range pluginhost.GetModuleManager().GetCommands() {
 		if existing[moduleCmd.Name()] {
 			log.Printf("команда модуля %q пропущена: имя уже занято", moduleCmd.Name())
 			continue
@@ -122,7 +122,7 @@ func startModuleWatcher(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				if filepath.Ext(event.Name) != core.ModuleExtension {
+				if filepath.Ext(event.Name) != pluginhost.ModuleExtension {
 					continue
 				}
 				if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) == 0 {
@@ -167,7 +167,7 @@ func applyModuleChanges(out func(string)) {
 }
 
 func reloadModule(path string, out func(string)) {
-	mm := core.GetModuleManager()
+	mm := pluginhost.GetModuleManager()
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		mm.UnloadModule(path)
@@ -199,8 +199,8 @@ var installCmd = &cobra.Command{
 		}
 
 		filePath := args[0]
-		if filepath.Ext(filePath) != core.ModuleExtension {
-			return fmt.Errorf("поддерживаются только %s модули", core.ModuleExtension)
+		if filepath.Ext(filePath) != pluginhost.ModuleExtension {
+			return fmt.Errorf("поддерживаются только %s модули", pluginhost.ModuleExtension)
 		}
 
 		data, err := os.ReadFile(filePath)
@@ -214,7 +214,7 @@ var installCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		core.GetModuleManager().UnloadModule(targetPath)
+		pluginhost.GetModuleManager().UnloadModule(targetPath)
 
 		modulePath, err := fm.InstallHashicorpModule(filepath.Base(filePath), data)
 		if err != nil {
@@ -223,14 +223,14 @@ var installCmd = &cobra.Command{
 
 		// Сумма фиксируется до загрузки: LoadModule проверяет её и откажется
 		// запускать файл, если содержимое изменится позже.
-		if err := core.WriteChecksum(modulePath); err != nil {
+		if err := pluginhost.WriteChecksum(modulePath); err != nil {
 			os.Remove(modulePath)
 			return err
 		}
 
-		if err := core.GetModuleManager().LoadModule(modulePath); err != nil {
+		if err := pluginhost.GetModuleManager().LoadModule(modulePath); err != nil {
 			os.Remove(modulePath)
-			os.Remove(core.ChecksumPath(modulePath))
+			os.Remove(pluginhost.ChecksumPath(modulePath))
 			return fmt.Errorf("модуль не загрузился и был удалён: %w", err)
 		}
 
@@ -255,14 +255,14 @@ var listModulesCmd = &cobra.Command{
 			return fmt.Errorf("не удалось прочитать директорию модулей: %w", err)
 		}
 
-		loaded := make(map[string]core.ModuleInfo)
-		for _, info := range core.GetModuleManager().LoadedModules() {
+		loaded := make(map[string]pluginhost.ModuleInfo)
+		for _, info := range pluginhost.GetModuleManager().LoadedModules() {
 			loaded[filepath.Base(info.Path)] = info
 		}
 
 		found := 0
 		for _, entry := range entries {
-			if entry.IsDir() || filepath.Ext(entry.Name()) != core.ModuleExtension {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != pluginhost.ModuleExtension {
 				continue
 			}
 			found++
@@ -288,8 +288,8 @@ var inspectCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := args[0]
-		if filepath.Ext(path) != core.ModuleExtension {
-			return fmt.Errorf("поддерживаются только %s модули", core.ModuleExtension)
+		if filepath.Ext(path) != pluginhost.ModuleExtension {
+			return fmt.Errorf("поддерживаются только %s модули", pluginhost.ModuleExtension)
 		}
 		if _, err := os.Stat(path); err != nil {
 			return fmt.Errorf("модуль недоступен: %w", err)
@@ -297,7 +297,7 @@ var inspectCmd = &cobra.Command{
 
 		// Модуль поднимается во временном менеджере и гасится сразу после
 		// осмотра, чтобы не влиять на набор команд текущей сессии.
-		inspector := core.NewModuleManager()
+		inspector := pluginhost.NewModuleManager()
 		defer inspector.Cleanup()
 
 		if err := inspector.LoadModule(path); err != nil {

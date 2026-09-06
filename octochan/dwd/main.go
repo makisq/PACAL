@@ -1,6 +1,6 @@
 // Команда dwd — пример внешнего модуля octochan.
 //
-// Модулю достаточно реализовать core.CommandModule: вся обвязка go-plugin,
+// Модулю достаточно реализовать pluginhost.CommandModule: вся обвязка go-plugin,
 // gRPC-сервер и конвертация команд живут в core. Раньше каждый модуль
 // копировал к себе ~130 строк этой обвязки, включая собственную (и другую
 // по поведению) конвертацию флагов.
@@ -9,7 +9,7 @@ package main
 import (
 	"fmt"
 
-	"octochan/core"
+	"octochan/pluginhost"
 
 	"github.com/spf13/cobra"
 )
@@ -67,5 +67,5 @@ func (t *TestModule) GetCommands() []*cobra.Command {
 }
 
 func main() {
-	core.ServeCommandModule(&TestModule{})
+	pluginhost.ServeCommandModule(&TestModule{})
 }

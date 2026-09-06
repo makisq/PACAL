@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"octochan/core"
+	"octochan/config"
 )
 
 func TestFormatSetting(t *testing.T) {
@@ -68,8 +68,8 @@ func TestFormatSettingMatchesConfigFile(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		live := core.NormalizeValue(FormatSetting(c.setting, c.unit))
-		file := core.NormalizeValue(c.inFile)
+		live := config.NormalizeValue(FormatSetting(c.setting, c.unit))
+		file := config.NormalizeValue(c.inFile)
 
 		if (live == file) != c.mustEqual {
 			t.Errorf("setting=%s unit=%s -> %q против файла %q -> %q: совпадение %v, ожидалось %v",
@@ -157,7 +157,7 @@ func TestUnencodedPasswordGivesUsableHint(t *testing.T) {
 func TestSchemeIsRegistered(t *testing.T) {
 	// Пакет регистрирует себя в init: core не знает про PostgreSQL,
 	// источник подключается сам.
-	schemes := core.RegisteredSourceSchemes()
+	schemes := config.RegisteredSourceSchemes()
 
 	var found bool
 	for _, scheme := range schemes {

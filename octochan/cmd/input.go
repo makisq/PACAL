@@ -7,7 +7,7 @@ import (
 	"os"
 	"sync"
 
-	"octochan/core"
+	"octochan/config"
 )
 
 // Прежняя схема конвейеров была двухслойной и нерабочей:
@@ -68,15 +68,15 @@ func readSource(path string) (source, error) {
 // loadConfigArg загружает конфиг из аргумента команды: это может быть
 // путь к файлу, "-" для stdin или ссылка на живой источник вида
 // postgres://user@host:5432/db.
-func loadConfigArg(ctx context.Context, ref string, opts core.SourceOptions) (*core.LoadedConfig, error) {
+func loadConfigArg(ctx context.Context, ref string, opts config.SourceOptions) (*config.LoadedConfig, error) {
 	if ref == "-" {
 		data, err := readStdin()
 		if err != nil {
 			return nil, err
 		}
-		return core.LoadConfigFromText("stdin", string(data))
+		return config.LoadConfigFromText("stdin", string(data))
 	}
-	return core.LoadConfigFrom(ctx, ref, opts)
+	return config.LoadConfigFrom(ctx, ref, opts)
 }
 
 // argOrStdin возвращает аргумент по индексу, а при его отсутствии — "-",

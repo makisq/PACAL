@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"octochan/core"
+	"octochan/config"
+	"octochan/rlm"
 
 	"github.com/spf13/cobra"
 )
@@ -37,7 +38,7 @@ func planConfig(cmd *cobra.Command, args []string) error {
 	}
 
 	ctx := cmd.Context()
-	opts := core.SourceOptions{}
+	opts := config.SourceOptions{}
 
 	base, err := loadConfigArg(ctx, args[0], opts)
 	if err != nil {
@@ -48,8 +49,8 @@ func planConfig(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	diff := core.CompareConfigs(base.Data, changes.Data, base.Name, changes.Name)
-	plan := core.PlanFromDiff(diff, base.Name)
+	diff := config.CompareConfigs(base.Data, changes.Data, base.Name, changes.Name)
+	plan := config.PlanFromDiff(diff, base.Name)
 	plan.Command = "patch"
 	plan.Source = changes.Name
 
@@ -80,12 +81,12 @@ func planScenario(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	client, err := core.NewAPIClient()
+	client, err := rlm.NewAPIClient()
 	if err != nil {
 		return err
 	}
 
-	plan, err := core.PlanScenario(cmd.Context(), client, []byte(src.Content), customParams)
+	plan, err := rlm.PlanScenario(cmd.Context(), client, []byte(src.Content), customParams)
 	if err != nil {
 		return err
 	}

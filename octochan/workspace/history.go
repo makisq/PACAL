@@ -1,4 +1,4 @@
-package core
+package workspace
 
 import (
 	"crypto/rand"
@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"octochan/config"
 )
 
 // EntryKind — вид записи истории.
@@ -44,21 +46,21 @@ func (k EntryKind) Russian() string {
 // которые никто не читал, потому что LoadSnapshot и ApplySnapshot не были
 // подключены ни к одной команде.
 type Entry struct {
-	ID        string    `json:"id"`
-	Timestamp time.Time `json:"timestamp"`
-	Author    string    `json:"author"`
-	Kind      EntryKind `json:"kind"`
-	Command   string    `json:"command"`
-	Source    string    `json:"source,omitempty"`
-	Target    string    `json:"target,omitempty"`
-	Summary   string    `json:"summary"`
-	Changes   []Change  `json:"changes,omitempty"`
+	ID        string          `json:"id"`
+	Timestamp time.Time       `json:"timestamp"`
+	Author    string          `json:"author"`
+	Kind      EntryKind       `json:"kind"`
+	Command   string          `json:"command"`
+	Source    string          `json:"source,omitempty"`
+	Target    string          `json:"target,omitempty"`
+	Summary   string          `json:"summary"`
+	Changes   []config.Change `json:"changes,omitempty"`
 
 	// Before — полное состояние файла до изменения.
 	//
 	// Хранится целиком, а не как обратный diff: конфиги малы, а откат
 	// по diff ломается, если файл успели поправить руками между операциями.
-	Before ConfigMap `json:"before,omitempty"`
+	Before config.ConfigMap `json:"before,omitempty"`
 
 	// Reversible означает, что операцию можно отменить командой rollback.
 	// Созданные во внешней системе задачи необратимы: перезапуск СУБД
@@ -120,7 +122,7 @@ func (h *History) Append(e *Entry) error {
 		e.ID = id
 	}
 	if e.Timestamp.IsZero() {
-		e.Timestamp = nowUTC()
+		e.Timestamp = time.Now().UTC()
 	}
 	if e.Author == "" {
 		e.Author = currentUser()

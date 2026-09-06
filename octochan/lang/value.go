@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"octochan/core"
+	"octochan/config"
 )
 
 // Value — значение языка.
@@ -117,7 +117,7 @@ type ConfigValue struct {
 	// Name — источник, показывается в отчётах и сообщениях об ошибках.
 	// Для живых источников не содержит пароля.
 	Name string
-	Data core.ConfigMap
+	Data config.ConfigMap
 	// Notes — замечания источника, например параметры, ждущие перезапуска.
 	Notes []string
 }

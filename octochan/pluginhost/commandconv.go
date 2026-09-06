@@ -1,4 +1,4 @@
-package core
+package pluginhost
 
 import (
 	"encoding/base64"

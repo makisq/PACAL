@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"sync"
 
-	"octochan/core"
+	"octochan/rlm"
 )
 
 // fakeAPI — подставной RLM для тестов модулей.
 //
-// Ради него и вводился интерфейс core.ScenarioAPI: пока модули принимали
-// *core.APIClient, проверить их без живого сервера было нельзя, и тестов
+// Ради него и вводился интерфейс rlm.ScenarioAPI: пока модули принимали
+// *rlm.APIClient, проверить их без живого сервера было нельзя, и тестов
 // у них не было ни одного.
 type fakeAPI struct {
 	mu sync.Mutex
@@ -77,7 +77,7 @@ func (f *fakeAPI) Post(_ context.Context, url string, body, out any) error {
 	return nil
 }
 
-func (f *fakeAPI) WaitForTask(_ context.Context, taskID string, _ core.WaitOptions) (map[string]any, error) {
+func (f *fakeAPI) WaitForTask(_ context.Context, taskID string, _ rlm.WaitOptions) (map[string]any, error) {
 	f.mu.Lock()
 	f.waits = append(f.waits, taskID)
 	waitFn := f.waitFn
@@ -111,11 +111,11 @@ func (f *fakeAPI) postedServices() []string {
 
 // apiError строит отказ RLM, как его увидел бы модуль.
 func apiError(status int, body string) error {
-	return &core.APIError{StatusCode: status, Body: body}
+	return &rlm.APIError{StatusCode: status, Body: body}
 }
 
 // requestParams достаёт блок params из запроса.
-func requestParams(req *core.APIRequest) (map[string]any, error) {
+func requestParams(req *rlm.APIRequest) (map[string]any, error) {
 	params, ok := req.Body["params"].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("в запросе нет params: %#v", req.Body)
@@ -124,7 +124,7 @@ func requestParams(req *core.APIRequest) (map[string]any, error) {
 }
 
 // requestItems достаёт items из запроса в виде списка карт.
-func requestItems(req *core.APIRequest) ([]map[string]any, error) {
+func requestItems(req *rlm.APIRequest) ([]map[string]any, error) {
 	switch list := req.Body["items"].(type) {
 	case []map[string]string:
 		out := make([]map[string]any, len(list))

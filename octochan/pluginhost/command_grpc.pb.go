@@ -2,9 +2,9 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v6.30.1
-// source: core/command.proto
+// source: pluginhost/command.proto
 
-package core
+package pluginhost
 
 import (
 	context "context"
@@ -19,15 +19,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	CommandModule_GetCommands_FullMethodName              = "/core.CommandModule/GetCommands"
-	CommandModule_RunCommand_FullMethodName               = "/core.CommandModule/RunCommand"
-	CommandModule_PreRunCommand_FullMethodName            = "/core.CommandModule/PreRunCommand"
-	CommandModule_PostRunCommand_FullMethodName           = "/core.CommandModule/PostRunCommand"
-	CommandModule_PersistentPreRunCommand_FullMethodName  = "/core.CommandModule/PersistentPreRunCommand"
-	CommandModule_PersistentPostRunCommand_FullMethodName = "/core.CommandModule/PersistentPostRunCommand"
-	CommandModule_Init_FullMethodName                     = "/core.CommandModule/Init"
-	CommandModule_Name_FullMethodName                     = "/core.CommandModule/Name"
-	CommandModule_Version_FullMethodName                  = "/core.CommandModule/Version"
+	CommandModule_GetCommands_FullMethodName              = "/pluginhost.CommandModule/GetCommands"
+	CommandModule_RunCommand_FullMethodName               = "/pluginhost.CommandModule/RunCommand"
+	CommandModule_PreRunCommand_FullMethodName            = "/pluginhost.CommandModule/PreRunCommand"
+	CommandModule_PostRunCommand_FullMethodName           = "/pluginhost.CommandModule/PostRunCommand"
+	CommandModule_PersistentPreRunCommand_FullMethodName  = "/pluginhost.CommandModule/PersistentPreRunCommand"
+	CommandModule_PersistentPostRunCommand_FullMethodName = "/pluginhost.CommandModule/PersistentPostRunCommand"
+	CommandModule_Init_FullMethodName                     = "/pluginhost.CommandModule/Init"
+	CommandModule_Name_FullMethodName                     = "/pluginhost.CommandModule/Name"
+	CommandModule_Version_FullMethodName                  = "/pluginhost.CommandModule/Version"
 )
 
 // CommandModuleClient is the client API for CommandModule service.
@@ -384,7 +384,7 @@ func _CommandModule_Version_Handler(srv interface{}, ctx context.Context, dec fu
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var CommandModule_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "core.CommandModule",
+	ServiceName: "pluginhost.CommandModule",
 	HandlerType: (*CommandModuleServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -425,5 +425,5 @@ var CommandModule_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "core/command.proto",
+	Metadata: "pluginhost/command.proto",
 }

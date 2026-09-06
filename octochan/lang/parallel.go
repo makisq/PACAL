@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"octochan/core"
+	"octochan/config"
 
 	"github.com/spf13/viper"
 )
@@ -227,7 +227,7 @@ func copyValue(v Value) Value {
 		return out
 
 	case ConfigValue:
-		data := make(core.ConfigMap, len(val.Data))
+		data := make(config.ConfigMap, len(val.Data))
 		for section, params := range val.Data {
 			copied := make(map[string]string, len(params))
 			for key, value := range params {

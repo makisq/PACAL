@@ -5,18 +5,18 @@ import (
 	"fmt"
 	"time"
 
-	"octochan/core"
+	"octochan/rlm"
 )
 
 // PostgresConfigFilesModule забирает конфигурационные файлы PostgreSQL.
 type PostgresConfigFilesModule struct {
-	data   *core.ScenarioData
+	data   *rlm.ScenarioData
 	params Params
 }
 
 // NewPostgresConfigFilesModule создаёт модуль сервиса
 // postgresql_se_get_config_files.
-func NewPostgresConfigFilesModule(data *core.ScenarioData) (core.ScenarioModule, error) {
+func NewPostgresConfigFilesModule(data *rlm.ScenarioData) (rlm.ScenarioModule, error) {
 	return &PostgresConfigFilesModule{data: data, params: Params(data.Parameters)}, nil
 }
 
@@ -39,13 +39,13 @@ func (m *PostgresConfigFilesModule) Validate() error {
 	return nil
 }
 
-func (m *PostgresConfigFilesModule) GenerateRequests(_ context.Context, _ core.ScenarioAPI) ([]*core.APIRequest, error) {
+func (m *PostgresConfigFilesModule) GenerateRequests(_ context.Context, _ rlm.ScenarioAPI) ([]*rlm.APIRequest, error) {
 	tableID := m.params.String("table_id", defaultTableID)
 	configList := m.params.StringList("config_list")
-	requests := make([]*core.APIRequest, 0, len(m.data.Targets))
+	requests := make([]*rlm.APIRequest, 0, len(m.data.Targets))
 
 	for _, target := range m.data.Targets {
-		items, err := core.PrepareScenarioItems([]core.Target{target}, tableID)
+		items, err := rlm.PrepareScenarioItems([]rlm.Target{target}, tableID)
 		if err != nil {
 			return nil, err
 		}
@@ -60,7 +60,7 @@ func (m *PostgresConfigFilesModule) GenerateRequests(_ context.Context, _ core.S
 			"config_list": configList,
 		}
 
-		requests = append(requests, &core.APIRequest{
+		requests = append(requests, &rlm.APIRequest{
 			Method: "POST",
 			Body: map[string]any{
 				"service":  "postgresql_se_get_config_files",

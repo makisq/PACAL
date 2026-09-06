@@ -5,21 +5,21 @@ import (
 	"fmt"
 	"time"
 
-	"octochan/core"
+	"octochan/rlm"
 )
 
 // defaultTableID — таблица инвентаря по умолчанию.
-// Раньше это значение было зашито внутри core.PrepareScenarioItems.
+// Раньше это значение было зашито внутри rlm.PrepareScenarioItems.
 const defaultTableID = "psqlseclusterstandalone"
 
 // PgBouncerTuningModule настраивает pgbouncer на целевых серверах.
 type PgBouncerTuningModule struct {
-	data   *core.ScenarioData
+	data   *rlm.ScenarioData
 	params Params
 }
 
 // NewPgBouncerTuningModule создаёт модуль сервиса psqlse_tuningpgbouncer.
-func NewPgBouncerTuningModule(data *core.ScenarioData) (core.ScenarioModule, error) {
+func NewPgBouncerTuningModule(data *rlm.ScenarioData) (rlm.ScenarioModule, error) {
 	return &PgBouncerTuningModule{data: data, params: Params(data.Parameters)}, nil
 }
 
@@ -35,7 +35,7 @@ func (m *PgBouncerTuningModule) Validate() error {
 	return m.params.RequireNonEmpty("role", "version")
 }
 
-func (m *PgBouncerTuningModule) GenerateRequests(_ context.Context, _ core.ScenarioAPI) ([]*core.APIRequest, error) {
+func (m *PgBouncerTuningModule) GenerateRequests(_ context.Context, _ rlm.ScenarioAPI) ([]*rlm.APIRequest, error) {
 	// Параметры настройки — всё, кроме служебных role/version,
 	// которые уезжают в описание хоста.
 	tuning := make(map[string]any, len(m.data.Parameters))
@@ -46,10 +46,10 @@ func (m *PgBouncerTuningModule) GenerateRequests(_ context.Context, _ core.Scena
 	}
 
 	tableID := m.params.String("table_id", defaultTableID)
-	requests := make([]*core.APIRequest, 0, len(m.data.Targets))
+	requests := make([]*rlm.APIRequest, 0, len(m.data.Targets))
 
 	for _, target := range m.data.Targets {
-		params := core.DeepCopyMap(tuning)
+		params := rlm.DeepCopyMap(tuning)
 		params["hosts"] = []any{
 			map[string]any{
 				"svm_ci":  target.SVMCI,
@@ -58,12 +58,12 @@ func (m *PgBouncerTuningModule) GenerateRequests(_ context.Context, _ core.Scena
 			},
 		}
 
-		items, err := core.PrepareScenarioItems([]core.Target{target}, tableID)
+		items, err := rlm.PrepareScenarioItems([]rlm.Target{target}, tableID)
 		if err != nil {
 			return nil, err
 		}
 
-		requests = append(requests, &core.APIRequest{
+		requests = append(requests, &rlm.APIRequest{
 			Method: "POST",
 			Body: map[string]any{
 				"service":  "psqlse_tuningpgbouncer",

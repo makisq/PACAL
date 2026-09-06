@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"octochan/core"
+	"octochan/config"
+	"octochan/workspace"
 
 	"github.com/spf13/cobra"
 )
@@ -33,7 +34,7 @@ var diffCmd = &cobra.Command{
 			return err
 		}
 
-		opts := core.SourceOptions{IncludeDefaults: includeDefaults}
+		opts := config.SourceOptions{IncludeDefaults: includeDefaults}
 		ctx := cmd.Context()
 
 		left, err := loadConfigArg(ctx, args[0], opts)
@@ -60,7 +61,7 @@ var diffCmd = &cobra.Command{
 			cmd.Printf("⚠️ %s\n", note)
 		}
 
-		diff := core.CompareConfigs(left.Data, right.Data, left.Name, right.Name)
+		diff := config.CompareConfigs(left.Data, right.Data, left.Name, right.Name)
 		if diff.Len() == 0 {
 			cmd.Println("Источники идентичны — различий не найдено.")
 			return nil
@@ -84,12 +85,12 @@ var diffCmd = &cobra.Command{
 			return nil
 		}
 
-		reportNum, err := core.GetNextReportNumber(fm.ReportsDir())
+		reportNum, err := config.GetNextReportNumber(fm.ReportsDir())
 		if err != nil {
 			return err
 		}
 		reportPath := filepath.Join(fm.ReportsDir(), fmt.Sprintf("diff_report_%d.txt", reportNum))
-		if err := core.SaveDiffToFile(diff, reportPath); err != nil {
+		if err := config.SaveDiffToFile(diff, reportPath); err != nil {
 			return err
 		}
 		cmd.Printf("\nОтчёт сохранён: %s\n", reportPath)
@@ -100,13 +101,13 @@ var diffCmd = &cobra.Command{
 
 		// Сравнение ничего не меняет, поэтому запись необратима по природе:
 		// откатывать нечего. Но знать, что и когда сравнивали, нужно.
-		entry := &core.Entry{
-			Kind:    core.EntryDiff,
+		entry := &workspace.Entry{
+			Kind:    workspace.EntryDiff,
 			Command: "diff",
 			Source:  left.Name,
 			Target:  right.Name,
 			Summary: fmt.Sprintf("расхождений: %d", diff.Len()),
-			Changes: core.PlanFromDiff(diff, right.Name).Changes,
+			Changes: config.PlanFromDiff(diff, right.Name).Changes,
 		}
 		record(cmd, entry)
 		cmd.Printf("Записано в историю: %s\n", entry.ID)

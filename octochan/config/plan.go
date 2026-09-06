@@ -1,10 +1,9 @@
-package core
+package config
 
 import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 )
 
 // ChangeKind — вид изменения.
@@ -217,6 +216,3 @@ func splitParamName(name string) (section, key string) {
 	}
 	return "", name
 }
-
-// nowUTC отдаёт время в UTC: записи истории читают в разных часовых поясах.
-func nowUTC() time.Time { return time.Now().UTC() }

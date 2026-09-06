@@ -1,10 +1,9 @@
-package core
+package rlm
 
 import (
 	"bufio"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -41,20 +40,21 @@ func APIToken() string {
 	return strings.TrimSpace(os.Getenv(EnvTokenVar))
 }
 
-// TokenFilePath — путь до файла с токеном.
-func (fm *FileManager) TokenFilePath() string {
-	return filepath.Join(fm.baseDir, ".env")
-}
+// tokenFilePerm — токен читаем только владельцем.
+const tokenFilePerm os.FileMode = 0o600
 
-// SaveToken записывает токен в файл с правами 0600.
-func (fm *FileManager) SaveToken(token string) error {
+// SaveTokenTo записывает токен в файл с правами 0600.
+//
+// Путь передаётся снаружи: где держать рабочие директории — забота
+// пакета workspace, а не клиента RLM.
+func SaveTokenTo(path, token string) error {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return fmt.Errorf("пустой токен")
 	}
 
 	content := fmt.Sprintf("%s=%s\n", EnvTokenVar, token)
-	if err := os.WriteFile(fm.TokenFilePath(), []byte(content), filePerm); err != nil {
+	if err := os.WriteFile(path, []byte(content), tokenFilePerm); err != nil {
 		return fmt.Errorf("не удалось сохранить токен: %w", err)
 	}
 
@@ -62,10 +62,10 @@ func (fm *FileManager) SaveToken(token string) error {
 	return nil
 }
 
-// LoadToken читает токен из файла и запоминает его.
+// LoadTokenFrom читает токен из файла и запоминает его.
 // Отсутствие файла ошибкой не считается.
-func (fm *FileManager) LoadToken() error {
-	f, err := os.Open(fm.TokenFilePath())
+func LoadTokenFrom(path string) error {
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil

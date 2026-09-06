@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"octochan/core"
+	"octochan/rlm"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -20,7 +20,7 @@ var authCmd = &cobra.Command{
 	Short: "Установить токен для доступа к RLM API",
 	Args:  cobra.MaximumNArgs(1),
 	Long: "Токен сохраняется в ~/.octochan/.env с правами 0600.\n" +
-		"Альтернатива — переменная окружения " + core.EnvTokenVar + ".",
+		"Альтернатива — переменная окружения " + rlm.EnvTokenVar + ".",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fm, err := mustFileManager()
 		if err != nil {
@@ -41,7 +41,7 @@ var authCmd = &cobra.Command{
 			return fmt.Errorf("пустой токен")
 		}
 
-		if err := fm.SaveToken(token); err != nil {
+		if err := rlm.SaveTokenTo(fm.TokenFilePath(), token); err != nil {
 			return err
 		}
 

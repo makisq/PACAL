@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"octochan/core"
+	"octochan/rlm"
 )
 
 // intelService — служебный сценарий разведки, который собирает сведения
@@ -66,12 +66,12 @@ type MainPayload struct {
 // Сначала на каждый CI запускается задача разведки, затем по её результату
 // формируется основной запрос.
 type PsqlTuningParamsModule struct {
-	data   *core.ScenarioData
+	data   *rlm.ScenarioData
 	params Params
 }
 
 // NewPsqlTuningParamsModule создаёт модуль сервиса psql_tuning_params_se.
-func NewPsqlTuningParamsModule(data *core.ScenarioData) (core.ScenarioModule, error) {
+func NewPsqlTuningParamsModule(data *rlm.ScenarioData) (rlm.ScenarioModule, error) {
 	return &PsqlTuningParamsModule{data: data, params: Params(data.Parameters)}, nil
 }
 
@@ -149,7 +149,7 @@ type intelOutcome struct {
 	err     error
 }
 
-func (m *PsqlTuningParamsModule) GenerateRequests(ctx context.Context, api core.ScenarioAPI) ([]*core.APIRequest, error) {
+func (m *PsqlTuningParamsModule) GenerateRequests(ctx context.Context, api rlm.ScenarioAPI) ([]*rlm.APIRequest, error) {
 	cis := m.allCIs()
 	if len(cis) == 0 {
 		return nil, fmt.Errorf("нет CI для запуска разведки")
@@ -193,7 +193,7 @@ func (m *PsqlTuningParamsModule) GenerateRequests(ctx context.Context, api core.
 			len(failed), len(cis), note, errors.Join(failed...))
 	}
 
-	requests := make([]*core.APIRequest, 0, len(outcomes))
+	requests := make([]*rlm.APIRequest, 0, len(outcomes))
 	for i, o := range outcomes {
 		ip, err := m.ipForIndex(i)
 		if err != nil {
@@ -216,7 +216,7 @@ func (m *PsqlTuningParamsModule) GenerateRequests(ctx context.Context, api core.
 // Результаты пишутся в слайс по индексу: прежняя версия писала в общие
 // map и поле структуры из нескольких горутин без синхронизации, что давало
 // "concurrent map writes" уже на двух серверах.
-func (m *PsqlTuningParamsModule) runIntel(ctx context.Context, api core.ScenarioAPI, cis []string) []intelOutcome {
+func (m *PsqlTuningParamsModule) runIntel(ctx context.Context, api rlm.ScenarioAPI, cis []string) []intelOutcome {
 	outcomes := make([]intelOutcome, len(cis))
 
 	var wg sync.WaitGroup
@@ -232,7 +232,7 @@ func (m *PsqlTuningParamsModule) runIntel(ctx context.Context, api core.Scenario
 	return outcomes
 }
 
-func (m *PsqlTuningParamsModule) intelForCI(ctx context.Context, api core.ScenarioAPI, ci string) intelOutcome {
+func (m *PsqlTuningParamsModule) intelForCI(ctx context.Context, api rlm.ScenarioAPI, ci string) intelOutcome {
 	outcome := intelOutcome{ci: ci}
 
 	taskID, tableID, err := m.startIntel(ctx, api, ci)
@@ -245,7 +245,7 @@ func (m *PsqlTuningParamsModule) intelForCI(ctx context.Context, api core.Scenar
 
 	log.Printf("разведка %s: задача %s (table_id=%s)", ci, taskID, tableID)
 
-	status, err := api.WaitForTask(ctx, taskID, core.WaitOptions{
+	status, err := api.WaitForTask(ctx, taskID, rlm.WaitOptions{
 		PollInterval: 5 * time.Second,
 		Timeout:      m.intelTimeout(),
 		OnStatus: func(s string) {
@@ -275,7 +275,7 @@ func (m *PsqlTuningParamsModule) intelTimeout() time.Duration {
 }
 
 // startIntel подбирает подходящий table_id и создаёт задачу разведки.
-func (m *PsqlTuningParamsModule) startIntel(ctx context.Context, api core.ScenarioAPI, ci string) (taskID, tableID string, err error) {
+func (m *PsqlTuningParamsModule) startIntel(ctx context.Context, api rlm.ScenarioAPI, ci string) (taskID, tableID string, err error) {
 	tableIDs := candidateTableIDs
 	if explicit := m.params.String("table_id", ""); explicit != "" {
 		tableIDs = []string{explicit}
@@ -290,7 +290,7 @@ func (m *PsqlTuningParamsModule) startIntel(ctx context.Context, api core.Scenar
 		lastErr = err
 
 		// Недостающий table_row_id — отдельный случай: повторяем с заглушкой.
-		if core.IsTableRowIDError(err) {
+		if rlm.IsTableRowIDError(err) {
 			id, retryErr := m.sendIntel(ctx, api, ci, candidate, true)
 			if retryErr == nil {
 				return id, candidate, nil
@@ -298,7 +298,7 @@ func (m *PsqlTuningParamsModule) startIntel(ctx context.Context, api core.Scenar
 			lastErr = retryErr
 		}
 
-		if core.IsTableIDError(lastErr) {
+		if rlm.IsTableIDError(lastErr) {
 			log.Printf("разведка %s: table_id %q не подошёл, пробую следующий", ci, candidate)
 			continue
 		}
@@ -312,7 +312,7 @@ func (m *PsqlTuningParamsModule) startIntel(ctx context.Context, api core.Scenar
 		len(tableIDs), lastErr)
 }
 
-func (m *PsqlTuningParamsModule) sendIntel(ctx context.Context, api core.ScenarioAPI, ci, tableID string, withRowID bool) (string, error) {
+func (m *PsqlTuningParamsModule) sendIntel(ctx context.Context, api rlm.ScenarioAPI, ci, tableID string, withRowID bool) (string, error) {
 	item := map[string]any{
 		"table_id":      tableID,
 		"invsvm_ci_svm": ci,
@@ -331,10 +331,10 @@ func (m *PsqlTuningParamsModule) sendIntel(ctx context.Context, api core.Scenari
 	if err := api.Post(ctx, api.TasksURL(), payload, &response); err != nil {
 		return "", err
 	}
-	return core.ExtractTaskID(response)
+	return rlm.ExtractTaskID(response)
 }
 
-func (m *PsqlTuningParamsModule) buildMainRequest(outcome intelOutcome, ip string) (*core.APIRequest, error) {
+func (m *PsqlTuningParamsModule) buildMainRequest(outcome intelOutcome, ip string) (*rlm.APIRequest, error) {
 	// RLM ожидает числовой task_id разведки.
 	taskID, err := strconv.Atoi(outcome.taskID)
 	if err != nil {
@@ -367,7 +367,7 @@ func (m *PsqlTuningParamsModule) buildMainRequest(outcome intelOutcome, ip strin
 	if err != nil {
 		return nil, err
 	}
-	return &core.APIRequest{Method: "POST", Body: body}, nil
+	return &rlm.APIRequest{Method: "POST", Body: body}, nil
 }
 
 // dbParams переводит блок parameters сценария в список DBParam.

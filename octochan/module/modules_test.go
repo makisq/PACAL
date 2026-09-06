@@ -6,14 +6,14 @@ import (
 	"strings"
 	"testing"
 
-	"octochan/core"
+	"octochan/rlm"
 )
 
 // buildScenario разбирает YAML-сценарий и создаёт модуль для его сервиса.
-func buildScenario(t *testing.T, yaml string) core.ScenarioModule {
+func buildScenario(t *testing.T, yaml string) rlm.ScenarioModule {
 	t.Helper()
 
-	data, err := core.ParseScenarioData([]byte(yaml))
+	data, err := rlm.ParseScenarioData([]byte(yaml))
 	if err != nil {
 		t.Fatalf("разбор сценария: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestPsqlTuningPreservesErrorChain(t *testing.T) {
 	// отличить запрет режима плана от настоящего сбоя.
 	api := newFakeAPI()
 	api.postFn = func(string, any) (map[string]any, error) {
-		return nil, core.ErrDryRun
+		return nil, rlm.ErrDryRun
 	}
 
 	module := buildScenario(t, tuningScenario)
@@ -484,7 +484,7 @@ func TestPsqlTuningPreservesErrorChain(t *testing.T) {
 	if err == nil {
 		t.Fatal("ожидалась ошибка")
 	}
-	if !errors.Is(err, core.ErrDryRun) {
+	if !errors.Is(err, rlm.ErrDryRun) {
 		t.Errorf("цепочка ошибок потеряна: %v", err)
 	}
 }

@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"octochan/core"
+	"octochan/config"
 
 	"github.com/spf13/cobra"
 )
@@ -67,7 +67,7 @@ ochan> else config.conf server.port != 8080 "Исправьте порт на 80
 func runCondition(cmd *cobra.Command, args []string) (bool, error) {
 	filePath, paramPath, operator, expected, message := args[0], args[1], args[2], args[3], args[4]
 
-	src, err := loadConfigArg(cmd.Context(), filePath, core.SourceOptions{})
+	src, err := loadConfigArg(cmd.Context(), filePath, config.SourceOptions{})
 	if err != nil {
 		return false, err
 	}
@@ -115,9 +115,9 @@ func splitParamPath(path string) (section, key string) {
 func evalCondition(current, operator, expected string) (bool, error) {
 	switch operator {
 	case "==":
-		return core.NormalizeValue(current) == core.NormalizeValue(expected), nil
+		return config.NormalizeValue(current) == config.NormalizeValue(expected), nil
 	case "!=":
-		return core.NormalizeValue(current) != core.NormalizeValue(expected), nil
+		return config.NormalizeValue(current) != config.NormalizeValue(expected), nil
 	case "contains":
 		return strings.Contains(current, expected), nil
 	case "startsWith":
@@ -166,7 +166,7 @@ func compareOrdered(current, expected, operator string) (bool, error) {
 
 // numericValue извлекает число из нормализованного значения.
 func numericValue(value string) (float64, bool) {
-	normalized := core.NormalizeValue(value)
+	normalized := config.NormalizeValue(value)
 	for _, prefix := range []string{"num:", "size:", "dur:"} {
 		if strings.HasPrefix(normalized, prefix) {
 			n, err := strconv.ParseFloat(strings.TrimPrefix(normalized, prefix), 64)

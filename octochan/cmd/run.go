@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"octochan/core"
+	"octochan/config"
 	"octochan/lang"
 
 	"github.com/spf13/cobra"
@@ -100,7 +100,7 @@ var runCmd = &cobra.Command{
 		interp := lang.NewInterpreter(cmd.Context(), registry, cmd.OutOrStdout())
 
 		target := args[0]
-		if core.FileExists(target) {
+		if config.FileExists(target) {
 			return runScriptFile(interp, registry, target)
 		}
 

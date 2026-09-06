@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	"octochan/core"
+	"octochan/pluginhost"
 
 	"github.com/spf13/cobra"
 )
@@ -103,7 +103,7 @@ func Execute() int {
 		return 1
 	}
 
-	defer core.GetModuleManager().Cleanup()
+	defer pluginhost.GetModuleManager().Cleanup()
 
 	// Команды модулей регистрируются до Execute: cobra выбирает команду
 	// раньше, чем отрабатывают инициализаторы из OnInitialize, поэтому

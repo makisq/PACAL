@@ -7,7 +7,8 @@ import (
 	"log"
 	"time"
 
-	"octochan/core"
+	"octochan/config"
+	"octochan/rlm"
 )
 
 const pangolinTableID = "pangolinunique"
@@ -49,12 +50,12 @@ type PangolinRestartPayload struct {
 
 // PangolinRestartModule перезапускает экземпляры pangolin.
 type PangolinRestartModule struct {
-	data   *core.ScenarioData
+	data   *rlm.ScenarioData
 	params Params
 }
 
 // NewPangolinRestartModule создаёт модуль сервиса pangolin_restart.
-func NewPangolinRestartModule(data *core.ScenarioData) (core.ScenarioModule, error) {
+func NewPangolinRestartModule(data *rlm.ScenarioData) (rlm.ScenarioModule, error) {
 	return &PangolinRestartModule{data: data, params: Params(data.Parameters)}, nil
 }
 
@@ -82,7 +83,7 @@ func (m *PangolinRestartModule) Validate() error {
 	}
 
 	for i, item := range m.data.Items {
-		if !core.Any(identityFields, func(field string) bool {
+		if !config.Any(identityFields, func(field string) bool {
 			return itemString(item, field) != ""
 		}) {
 			return fmt.Errorf("item #%d должен содержать хотя бы один из параметров: %v", i+1, identityFields)
@@ -105,14 +106,14 @@ func (m *PangolinRestartModule) Validate() error {
 	return nil
 }
 
-func (m *PangolinRestartModule) GenerateRequests(_ context.Context, _ core.ScenarioAPI) ([]*core.APIRequest, error) {
+func (m *PangolinRestartModule) GenerateRequests(_ context.Context, _ rlm.ScenarioAPI) ([]*rlm.APIRequest, error) {
 	params := PangolinRestartParams{
 		Restart:         m.params.String("restart", ""),
 		SkipSMConflicts: m.params.Bool("skip_sm_conflicts", false),
 		Confirm:         m.params.Bool("confirm", false),
 	}
 
-	var requests []*core.APIRequest
+	var requests []*rlm.APIRequest
 
 	if len(m.data.Items) > 0 {
 		req, err := m.buildRequest(params, m.itemsFromScenario())
@@ -163,7 +164,7 @@ func (m *PangolinRestartModule) itemsFromScenario() []PangolinRestartItem {
 	return items
 }
 
-func itemsFromTarget(target core.Target) []PangolinRestartItem {
+func itemsFromTarget(target rlm.Target) []PangolinRestartItem {
 	cis := target.GetCIs()
 	if len(cis) == 0 {
 		return []PangolinRestartItem{{TableID: pangolinTableID, InvsvmIP: target.IP}}
@@ -180,7 +181,7 @@ func itemsFromTarget(target core.Target) []PangolinRestartItem {
 	return items
 }
 
-func (m *PangolinRestartModule) buildRequest(params PangolinRestartParams, items []PangolinRestartItem) (*core.APIRequest, error) {
+func (m *PangolinRestartModule) buildRequest(params PangolinRestartParams, items []PangolinRestartItem) (*rlm.APIRequest, error) {
 	if len(items) == 0 {
 		return nil, fmt.Errorf("пустой список items")
 	}
@@ -198,11 +199,11 @@ func (m *PangolinRestartModule) buildRequest(params PangolinRestartParams, items
 		return nil, err
 	}
 
-	return &core.APIRequest{Method: "POST", Body: body}, nil
+	return &rlm.APIRequest{Method: "POST", Body: body}, nil
 }
 
 // structToMap переводит типизированный payload в map, как того требует
-// core.APIRequest. Раньше эта пара Marshal/Unmarshal была скопирована
+// rlm.APIRequest. Раньше эта пара Marshal/Unmarshal была скопирована
 // в двух модулях, и рядом с ней стоял ещё один MarshalIndent, печатавший
 // в лог весь запрос вместе с CI и адресами серверов.
 func structToMap(v any) (map[string]any, error) {

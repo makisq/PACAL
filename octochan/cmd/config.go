@@ -7,7 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"octochan/core"
+	"octochan/rlm"
+	"octochan/workspace"
 
 	"github.com/spf13/viper"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -19,9 +20,9 @@ import (
 const logFileName = "octochan.log"
 
 // fileManager — общий на процесс, создаётся один раз в initConfig.
-var fileManager *core.FileManager
+var fileManager *workspace.FileManager
 
-func mustFileManager() (*core.FileManager, error) {
+func mustFileManager() (*workspace.FileManager, error) {
 	if fileManager == nil {
 		return nil, fmt.Errorf("рабочие директории не инициализированы")
 	}
@@ -30,7 +31,7 @@ func mustFileManager() (*core.FileManager, error) {
 
 // configPath определяет, откуда читать конфиг.
 // Флаг --config раньше объявлялся, но нигде не использовался.
-func configPath(fm *core.FileManager) string {
+func configPath(fm *workspace.FileManager) string {
 	if cfgFile != "" {
 		return cfgFile
 	}
@@ -41,7 +42,7 @@ func configPath(fm *core.FileManager) string {
 }
 
 func initConfig() error {
-	fm, err := core.NewFileManager()
+	fm, err := workspace.NewFileManager()
 	if err != nil {
 		return err
 	}
@@ -77,7 +78,7 @@ func initConfig() error {
 
 	// Токен читается отдельно и в viper не попадает, чтобы не уехать
 	// в config.yaml при следующем WriteConfig.
-	if err := fm.LoadToken(); err != nil {
+	if err := rlm.LoadTokenFrom(fm.TokenFilePath()); err != nil {
 		return fmt.Errorf("не удалось прочитать токен: %w", err)
 	}
 

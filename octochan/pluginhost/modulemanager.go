@@ -1,4 +1,4 @@
-package core
+package pluginhost
 
 import (
 	"context"
@@ -25,6 +25,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// checksumFilePerm — файл контрольной суммы читаем только владельцем.
+const checksumFilePerm os.FileMode = 0o600
 
 // ModuleExtension — расширение файлов плагинов.
 const ModuleExtension = ".hcplugin"
@@ -368,14 +371,34 @@ func (c *CommandGRPCClient) Init(config map[string]any) error {
 }
 
 func (c *CommandGRPCClient) Name() string {
+	name, _ := c.ProbeName()
+	return name
+}
+
+// ProbeName возвращает имя модуля вместе с причиной отказа.
+//
+// Интерфейс CommandModule требует Name() string без ошибки, и раньше причина
+// молча терялась: при несовпадении версии протокола пользователь видел
+// бессмысленное «модуль не сообщил имя» вместо объяснения, что модуль
+// собран под другую версию и его надо пересобрать.
+func (c *CommandGRPCClient) ProbeName() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	resp, err := c.Client.Name(ctx, &Empty{})
 	if err != nil {
-		return ""
+		return "", protocolError(err)
 	}
-	return resp.GetName()
+	return resp.GetName(), nil
+}
+
+// protocolError распознаёт модуль, собранный под другую версию описания
+// сервиса: gRPC отвечает Unimplemented, если имя сервиса не совпало.
+func protocolError(err error) error {
+	if st, ok := status.FromError(err); ok && st.Code() == codes.Unimplemented {
+		return fmt.Errorf("модуль собран под другую версию протокола и требует пересборки: %s", st.Message())
+	}
+	return unwrapGRPCError(err)
 }
 
 func (c *CommandGRPCClient) Version() string {
@@ -446,7 +469,7 @@ func WriteChecksum(modulePath string) error {
 	if err != nil {
 		return fmt.Errorf("не удалось посчитать контрольную сумму: %w", err)
 	}
-	return os.WriteFile(ChecksumPath(modulePath), []byte(hex.EncodeToString(sum)), filePerm)
+	return os.WriteFile(ChecksumPath(modulePath), []byte(hex.EncodeToString(sum)), checksumFilePerm)
 }
 
 func expectedChecksum(modulePath string) ([]byte, error) {
@@ -517,15 +540,26 @@ func (m *ModuleManager) LoadModule(path string) error {
 		SyncStderr: os.Stderr,
 	})
 
+	// Процесс гасится на любом пути выхода, кроме успешного: до этого
+	// Kill стоял в каждой ветке отдельно, и достаточно было добавить новую
+	// проверку, чтобы процесс модуля остался висеть и держать свой файл.
+	adopted := false
+	defer func() {
+		if !adopted {
+			client.Kill()
+		}
+	}()
+
 	module, err := dispenseCommandModule(client)
 	if err != nil {
-		client.Kill()
 		return err
 	}
 
-	name := module.Name()
+	name, err := moduleName(module)
+	if err != nil {
+		return fmt.Errorf("модуль %s: %w", filepath.Base(absPath), err)
+	}
 	if name == "" {
-		client.Kill()
 		return fmt.Errorf("модуль %s не сообщил имя", absPath)
 	}
 
@@ -554,6 +588,8 @@ func (m *ModuleManager) LoadModule(path string) error {
 		client:   client,
 		commands: commands,
 	}
+	// Владение процессом перешло менеджеру: гасить его будет Cleanup.
+	adopted = true
 
 	return nil
 }
@@ -576,6 +612,17 @@ func (m *ModuleManager) secureConfigFor(absPath string) (*plugin.SecureConfig, e
 	default:
 		return nil, err
 	}
+}
+
+// moduleName спрашивает имя модуля, сохраняя причину отказа.
+//
+// Интерфейс CommandModule возвращает имя без ошибки, поэтому причина
+// доступна только через необязательный ProbeName.
+func moduleName(module CommandModule) (string, error) {
+	if prober, ok := module.(interface{ ProbeName() (string, error) }); ok {
+		return prober.ProbeName()
+	}
+	return module.Name(), nil
 }
 
 func dispenseCommandModule(client *plugin.Client) (CommandModule, error) {
@@ -687,8 +734,10 @@ func (m *ModuleManager) LoadModulesFromDir(dir string) error {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ModuleExtension {
 			continue
 		}
+		// Имя модуля LoadModule подставляет само; повторять его здесь
+		// значило бы печатать «модуль X: модуль X: ...».
 		if err := m.LoadModule(filepath.Join(dir, entry.Name())); err != nil {
-			errs = append(errs, fmt.Errorf("модуль %s: %w", entry.Name(), err))
+			errs = append(errs, err)
 		}
 	}
 
