@@ -105,7 +105,7 @@ func (m *PangolinRestartModule) Validate() error {
 	return nil
 }
 
-func (m *PangolinRestartModule) GenerateRequests(_ context.Context, _ *core.APIClient) ([]*core.APIRequest, error) {
+func (m *PangolinRestartModule) GenerateRequests(_ context.Context, _ core.ScenarioAPI) ([]*core.APIRequest, error) {
 	params := PangolinRestartParams{
 		Restart:         m.params.String("restart", ""),
 		SkipSMConflicts: m.params.Bool("skip_sm_conflicts", false),

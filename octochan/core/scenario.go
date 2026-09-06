@@ -48,10 +48,34 @@ type ScenarioData struct {
 	Items      []map[string]any `yaml:"items" json:"items"`
 }
 
+// ScenarioAPI — то, что модуль сценария вправе делать с внешней системой.
+//
+// Модули принимают интерфейс, а не *APIClient, по двум причинам. Во-первых,
+// без этого их нельзя проверить, не имея живого RLM: раньше у модулей
+// не было ни одного теста именно поэтому. Во-вторых, набор методов задаёт
+// границу дозволенного — переключателя режима плана здесь намеренно нет,
+// чтобы модуль не мог его отключить.
+type ScenarioAPI interface {
+	// TasksURL — адрес создания задач.
+	TasksURL() string
+	// Get выполняет чтение.
+	Get(ctx context.Context, url string, out any) error
+	// Post создаёт задачу. В режиме плана возвращает ErrDryRun.
+	Post(ctx context.Context, url string, body, out any) error
+	// WaitForTask ждёт завершения задачи.
+	WaitForTask(ctx context.Context, taskID string, opts WaitOptions) (map[string]any, error)
+	// IsDryRun сообщает, что изменяющие запросы запрещены.
+	IsDryRun() bool
+}
+
+// Проверка на этапе компиляции: настоящий клиент обязан подходить под
+// интерфейс, иначе о расхождении узнали бы только в рантайме.
+var _ ScenarioAPI = (*APIClient)(nil)
+
 // ScenarioModule описывает конкретный сервис RLM.
 type ScenarioModule interface {
 	Validate() error
-	GenerateRequests(ctx context.Context, client *APIClient) ([]*APIRequest, error)
+	GenerateRequests(ctx context.Context, api ScenarioAPI) ([]*APIRequest, error)
 }
 
 // ScenarioModuleCreator создаёт модуль по данным сценария.
@@ -190,7 +214,7 @@ func targetFromMap(m map[string]any) Target {
 
 // ExecuteScenario разбирает сценарий, валидирует его и выполняет запросы.
 // Возвращает идентификаторы созданных задач в порядке следования запросов.
-func ExecuteScenario(ctx context.Context, client *APIClient, scenarioData []byte, customParams map[string]string) ([]string, error) {
+func ExecuteScenario(ctx context.Context, api ScenarioAPI, scenarioData []byte, customParams map[string]string) ([]string, error) {
 	if len(scenarioData) == 0 {
 		return nil, errors.New("пустые данные сценария")
 	}
@@ -209,7 +233,7 @@ func ExecuteScenario(ctx context.Context, client *APIClient, scenarioData []byte
 		return nil, err
 	}
 
-	requests, err := module.GenerateRequests(ctx, client)
+	requests, err := module.GenerateRequests(ctx, api)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка подготовки запросов: %w", err)
 	}
@@ -217,7 +241,7 @@ func ExecuteScenario(ctx context.Context, client *APIClient, scenarioData []byte
 		return nil, errors.New("модуль не сформировал ни одного запроса")
 	}
 
-	return submitRequests(ctx, client, requests)
+	return submitRequests(ctx, api, requests)
 }
 
 // buildModule создаёт и валидирует модуль сценария.
@@ -245,7 +269,7 @@ func buildModule(data *ScenarioData) (ScenarioModule, error) {
 // к API уже на этапе подготовки, и без запрета «показать план» создавало бы
 // задачи разведки. Если модуль упирается в этот запрет, план получается
 // неполным — и об этом говорится прямо, а не замалчивается.
-func PlanScenario(ctx context.Context, client *APIClient, scenarioData []byte, customParams map[string]string) (*Plan, error) {
+func PlanScenario(ctx context.Context, api ScenarioAPI, scenarioData []byte, customParams map[string]string) (*Plan, error) {
 	if len(scenarioData) == 0 {
 		return nil, errors.New("пустые данные сценария")
 	}
@@ -269,10 +293,9 @@ func PlanScenario(ctx context.Context, client *APIClient, scenarioData []byte, c
 		Destructive: isDestructiveService(data.Service),
 	}
 
-	client.SetDryRun(true)
-	defer client.SetDryRun(false)
-
-	requests, err := module.GenerateRequests(ctx, client)
+	// Обёртка, а не флаг: модуль держит только интерфейс и до настоящего
+	// Post дотянуться не может.
+	requests, err := module.GenerateRequests(ctx, DryRun(api))
 	if err != nil {
 		if !errors.Is(err, ErrDryRun) {
 			return nil, fmt.Errorf("ошибка подготовки запросов: %w", err)
@@ -385,7 +408,7 @@ func describeRequestParams(req *APIRequest) string {
 //
 // Ретраев здесь нет намеренно: запросы не идемпотентны, и прежняя реализация
 // с тремя попытками порождала дубли задач на стороне RLM.
-func submitRequests(ctx context.Context, client *APIClient, requests []*APIRequest) ([]string, error) {
+func submitRequests(ctx context.Context, api ScenarioAPI, requests []*APIRequest) ([]string, error) {
 	maxParallel := viper.GetInt("defaults.max_parallel_tasks")
 	if maxParallel <= 0 {
 		maxParallel = 5
@@ -412,11 +435,11 @@ func submitRequests(ctx context.Context, client *APIClient, requests []*APIReque
 
 			url := r.URL
 			if url == "" {
-				url = client.TasksURL()
+				url = api.TasksURL()
 			}
 
 			var response map[string]any
-			if err := client.Post(ctx, url, r.Body, &response); err != nil {
+			if err := api.Post(ctx, url, r.Body, &response); err != nil {
 				errs[idx] = fmt.Errorf("запрос #%d: %w", idx+1, err)
 				return
 			}

@@ -39,7 +39,7 @@ func (m *PostgresConfigFilesModule) Validate() error {
 	return nil
 }
 
-func (m *PostgresConfigFilesModule) GenerateRequests(_ context.Context, _ *core.APIClient) ([]*core.APIRequest, error) {
+func (m *PostgresConfigFilesModule) GenerateRequests(_ context.Context, _ core.ScenarioAPI) ([]*core.APIRequest, error) {
 	tableID := m.params.String("table_id", defaultTableID)
 	configList := m.params.StringList("config_list")
 	requests := make([]*core.APIRequest, 0, len(m.data.Targets))

@@ -35,7 +35,7 @@ func (m *PgBouncerTuningModule) Validate() error {
 	return m.params.RequireNonEmpty("role", "version")
 }
 
-func (m *PgBouncerTuningModule) GenerateRequests(_ context.Context, _ *core.APIClient) ([]*core.APIRequest, error) {
+func (m *PgBouncerTuningModule) GenerateRequests(_ context.Context, _ core.ScenarioAPI) ([]*core.APIRequest, error) {
 	// Параметры настройки — всё, кроме служебных role/version,
 	// которые уезжают в описание хоста.
 	tuning := make(map[string]any, len(m.data.Parameters))
