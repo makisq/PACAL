@@ -92,6 +92,17 @@ func applyRLMScenario(cmd *cobra.Command, args []string) error {
 		for _, taskID := range taskIDs {
 			cmd.Printf("  - %s\n", taskID)
 		}
+
+		// Задачи во внешней системе необратимы: перезапуск уже произошёл,
+		// и отменять в октохане нечего. Но след остаться обязан.
+		record(cmd, &core.Entry{
+			Kind:       core.EntryApply,
+			Command:    "apply --rlm",
+			Source:     src.Name,
+			Summary:    fmt.Sprintf("создано задач: %d", len(taskIDs)),
+			TaskIDs:    taskIDs,
+			Reversible: false,
+		})
 	}
 	if err != nil {
 		return err

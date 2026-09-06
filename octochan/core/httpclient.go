@@ -71,7 +71,23 @@ type APIClient struct {
 	token    string
 	tasksURL string
 	baseURL  string
+
+	// dryRun запрещает изменяющие запросы.
+	//
+	// Нужен команде plan: модуль psql_tuning_params_se обращается к API уже
+	// на этапе подготовки запросов, и без запрета «показать план» молча
+	// создавало бы задачи разведки. Громкий отказ лучше тихого действия.
+	dryRun bool
 }
+
+// ErrDryRun возвращается, когда в режиме плана делается изменяющий запрос.
+var ErrDryRun = errors.New("режим плана: изменяющие запросы запрещены")
+
+// SetDryRun переводит клиента в режим планирования.
+func (c *APIClient) SetDryRun(on bool) { c.dryRun = on }
+
+// IsDryRun сообщает, включён ли режим планирования.
+func (c *APIClient) IsDryRun() bool { return c.dryRun }
 
 // NewAPIClient собирает клиента из текущей конфигурации viper.
 func NewAPIClient() (*APIClient, error) {
@@ -126,6 +142,10 @@ func (c *APIClient) Get(ctx context.Context, url string, out any) error {
 }
 
 func (c *APIClient) do(ctx context.Context, method, url string, body, out any) error {
+	if c.dryRun && method != http.MethodGet && method != http.MethodHead {
+		return fmt.Errorf("%w (%s %s)", ErrDryRun, method, url)
+	}
+
 	var reader io.Reader
 	if body != nil {
 		payload, err := json.Marshal(body)

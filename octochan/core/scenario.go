@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/spf13/viper"
@@ -203,6 +204,24 @@ func ExecuteScenario(ctx context.Context, client *APIClient, scenarioData []byte
 		data.Parameters[key] = val
 	}
 
+	module, err := buildModule(data)
+	if err != nil {
+		return nil, err
+	}
+
+	requests, err := module.GenerateRequests(ctx, client)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка подготовки запросов: %w", err)
+	}
+	if len(requests) == 0 {
+		return nil, errors.New("модуль не сформировал ни одного запроса")
+	}
+
+	return submitRequests(ctx, client, requests)
+}
+
+// buildModule создаёт и валидирует модуль сценария.
+func buildModule(data *ScenarioData) (ScenarioModule, error) {
 	creator, ok := lookupScenarioModule(data.Service)
 	if !ok {
 		return nil, fmt.Errorf("модуль для сервиса %q не зарегистрирован; доступны: %v",
@@ -216,16 +235,150 @@ func ExecuteScenario(ctx context.Context, client *APIClient, scenarioData []byte
 	if err := module.Validate(); err != nil {
 		return nil, fmt.Errorf("ошибка валидации: %w", err)
 	}
+	return module, nil
+}
+
+// PlanScenario готовит сценарий и описывает, что было бы сделано,
+// ничего при этом не делая.
+//
+// Клиент переводится в режим плана: модуль psql_tuning_params_se обращается
+// к API уже на этапе подготовки, и без запрета «показать план» создавало бы
+// задачи разведки. Если модуль упирается в этот запрет, план получается
+// неполным — и об этом говорится прямо, а не замалчивается.
+func PlanScenario(ctx context.Context, client *APIClient, scenarioData []byte, customParams map[string]string) (*Plan, error) {
+	if len(scenarioData) == 0 {
+		return nil, errors.New("пустые данные сценария")
+	}
+
+	data, err := ParseScenarioData(scenarioData)
+	if err != nil {
+		return nil, err
+	}
+	for key, val := range customParams {
+		data.Parameters[key] = val
+	}
+
+	module, err := buildModule(data)
+	if err != nil {
+		return nil, err
+	}
+
+	plan := &Plan{
+		Command:     "apply --rlm",
+		Source:      data.Service,
+		Destructive: isDestructiveService(data.Service),
+	}
+
+	client.SetDryRun(true)
+	defer client.SetDryRun(false)
 
 	requests, err := module.GenerateRequests(ctx, client)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка подготовки запросов: %w", err)
-	}
-	if len(requests) == 0 {
-		return nil, errors.New("модуль не сформировал ни одного запроса")
+		if !errors.Is(err, ErrDryRun) {
+			return nil, fmt.Errorf("ошибка подготовки запросов: %w", err)
+		}
+
+		// Полный план недоступен: модулю нужен ответ внешней системы.
+		// Показываем то, что известно до обращения к ней.
+		plan.Warn("модуль %s обращается к API на этапе подготовки, поэтому план "+
+			"неполный: показаны цели, но не итоговые параметры", data.Service)
+		for _, target := range data.Targets {
+			for _, ci := range target.GetCIs() {
+				plan.Add(Change{
+					Kind:   ChangeTask,
+					Target: ci,
+					Name:   data.Service,
+					Detail: "состав запроса определится после разведки",
+				})
+			}
+		}
+		plan.Sort()
+		return plan, nil
 	}
 
-	return submitRequests(ctx, client, requests)
+	for i, req := range requests {
+		plan.Add(Change{
+			Kind:   ChangeTask,
+			Target: requestTarget(req, i),
+			Name:   data.Service,
+			Detail: describeRequestParams(req),
+		})
+	}
+
+	plan.Sort()
+	return plan, nil
+}
+
+// isDestructiveService помечает сервисы, прерывающие обслуживание.
+func isDestructiveService(service string) bool {
+	return strings.Contains(service, "restart")
+}
+
+// requestTarget вытаскивает из тела запроса, к какому серверу он относится.
+func requestTarget(req *APIRequest, index int) string {
+	if items, ok := req.Body["items"]; ok {
+		if cis := collectCIs(items); len(cis) > 0 {
+			return strings.Join(cis, ", ")
+		}
+	}
+	return fmt.Sprintf("запрос #%d", index+1)
+}
+
+// collectCIs находит идентификаторы серверов в items любого вида:
+// модули собирают их и как []map[string]string, и как []any.
+func collectCIs(items any) []string {
+	var found []string
+
+	appendFrom := func(m map[string]any) {
+		if ci, ok := m["invsvm_ci_svm"].(string); ok && ci != "" {
+			found = append(found, ci)
+		}
+	}
+
+	switch list := items.(type) {
+	case []map[string]string:
+		for _, item := range list {
+			if ci := item["invsvm_ci_svm"]; ci != "" {
+				found = append(found, ci)
+			}
+		}
+	case []map[string]any:
+		for _, item := range list {
+			appendFrom(item)
+		}
+	case []any:
+		for _, item := range list {
+			if m, ok := item.(map[string]any); ok {
+				appendFrom(m)
+			}
+		}
+	}
+	return found
+}
+
+// describeRequestParams коротко описывает параметры запроса.
+func describeRequestParams(req *APIRequest) string {
+	params, ok := req.Body["params"].(map[string]any)
+	if !ok {
+		return ""
+	}
+
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		// hosts и db_params — вложенные структуры, в однострочное
+		// описание они не помещаются.
+		if key == "hosts" || key == "db_params" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", key, params[key]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // submitRequests отправляет запросы с ограничением параллелизма.

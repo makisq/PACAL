@@ -2,6 +2,7 @@ package module
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -167,7 +168,7 @@ func (m *PsqlTuningParamsModule) GenerateRequests(ctx context.Context, client *c
 	// Ошибки собираем все сразу и обязательно сообщаем, какие задачи разведки
 	// уже успели создаться: они остаются выполняться на стороне RLM.
 	var (
-		failed  []string
+		failed  []error
 		created []string
 	)
 	for _, o := range outcomes {
@@ -175,16 +176,21 @@ func (m *PsqlTuningParamsModule) GenerateRequests(ctx context.Context, client *c
 			created = append(created, o.taskID)
 		}
 		if o.err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %v", o.ci, o.err))
+			failed = append(failed, fmt.Errorf("%s: %w", o.ci, o.err))
 		}
 	}
 	if len(failed) > 0 {
-		msg := fmt.Sprintf("разведка не удалась для %d из %d CI:\n  %s",
-			len(failed), len(cis), strings.Join(failed, "\n  "))
+		note := ""
 		if len(created) > 0 {
-			msg += fmt.Sprintf("\nуже созданы задачи разведки: %s", strings.Join(created, ", "))
+			note = fmt.Sprintf(" (уже созданы задачи разведки: %s)", strings.Join(created, ", "))
 		}
-		return nil, fmt.Errorf("%s", msg)
+
+		// Причины оборачиваются, а не форматируются в строку: вызывающему
+		// нужно уметь распознать их через errors.Is. Из-за прежнего
+		// fmt.Errorf("%s", msg) цепочка терялась, и команда plan не могла
+		// отличить запрет режима плана от настоящего сбоя разведки.
+		return nil, fmt.Errorf("разведка не удалась для %d из %d CI%s: %w",
+			len(failed), len(cis), note, errors.Join(failed...))
 	}
 
 	requests := make([]*core.APIRequest, 0, len(outcomes))

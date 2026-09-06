@@ -22,34 +22,25 @@ var patchCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(2),
 	Example: "ochan patch prod.conf changes.conf -o patched.conf",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		base, err := readSource(args[0])
+		ctx := cmd.Context()
+		opts := core.SourceOptions{}
+
+		base, err := loadConfigArg(ctx, args[0], opts)
 		if err != nil {
 			return err
 		}
-		changes, err := readSource(args[1])
+		changes, err := loadConfigArg(ctx, args[1], opts)
 		if err != nil {
 			return err
 		}
 
-		baseCfg, err := core.ParseConfig(base.Content)
-		if err != nil {
-			return fmt.Errorf("%s: %w", base.Name, err)
-		}
-		changesCfg, err := core.ParseConfig(changes.Content)
-		if err != nil {
-			return fmt.Errorf("%s: %w", changes.Name, err)
-		}
-
-		applied := 0
-		for section, params := range changesCfg {
-			if _, exists := baseCfg[section]; !exists {
-				baseCfg[section] = make(map[string]string)
-			}
-			for key, value := range params {
-				baseCfg[section][key] = value
-				applied++
-			}
-		}
+		// Патч — это применение плана: в файл переносятся только настоящие
+		// изменения, и ровно они попадают в историю. Раньше копировались
+		// все параметры подряд, включая совпадающие.
+		diff := core.CompareConfigs(base.Data, changes.Data, base.Name, changes.Name)
+		plan := core.PlanFromDiff(diff, base.Name)
+		plan.Command = "patch"
+		plan.Source = changes.Name
 
 		// Путь вывода раньше был захардкожен как "patched.conf" в текущей
 		// директории и молча перезаписывался.
@@ -57,17 +48,42 @@ var patchCmd = &cobra.Command{
 		if output == "" {
 			output = "patched.conf"
 		}
-		if !patchForce {
-			if _, err := os.Stat(output); err == nil {
+
+		// Состояние до записи сохраняем целиком: по нему работает rollback.
+		var before core.ConfigMap
+		if _, statErr := os.Stat(output); statErr == nil {
+			if !patchForce {
 				return fmt.Errorf("файл %s уже существует, используйте --force для перезаписи", output)
+			}
+			if loaded, err := core.LoadConfigFrom(ctx, output, opts); err == nil {
+				before = loaded.Data
 			}
 		}
 
-		if err := core.SaveConfig(baseCfg, output); err != nil {
+		if plan.Len() == 0 {
+			cmd.Println("Изменений нет — файл не тронут.")
+			return nil
+		}
+
+		result := core.ApplyPlan(base.Data, plan)
+		if err := core.SaveConfig(result, output); err != nil {
 			return err
 		}
 
-		cmd.Printf("Применено параметров: %d. Результат сохранён в %s\n", applied, output)
+		record(cmd, &core.Entry{
+			Kind:    core.EntryPatch,
+			Command: "patch",
+			Source:  changes.Name,
+			Target:  output,
+			Summary: fmt.Sprintf("изменено параметров: %d", plan.Len()),
+			Changes: plan.Changes,
+			Before:  before,
+			// Откатить можно только то, что существовало до операции:
+			// для нового файла восстанавливать нечего.
+			Reversible: before != nil,
+		})
+
+		cmd.Printf("Изменено параметров: %d. Результат сохранён в %s\n", plan.Len(), output)
 		return nil
 	},
 }
