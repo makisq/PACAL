@@ -1,105 +1,109 @@
 package core
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
+// Snapshot фиксирует расхождение между двумя конфигами в момент времени.
 type Snapshot struct {
 	ID        string    `json:"id"`
 	ParentID  *string   `json:"parent_id,omitempty"`
-	Patch     string    `json:"patch"`
+	Patch     *Diff     `json:"patch"`
 	Author    string    `json:"author"`
 	Timestamp time.Time `json:"timestamp"`
 	Message   string    `json:"message,omitempty"`
 }
 
-func CreateSnapshot(parentID *string, db1Config, db2Config map[string]map[string]string, author, message string) (*Snapshot, error) {
-	diff := CompareConfigs(db1Config, db2Config, "source", "target")
-	patch, err := json.Marshal(diff)
+// CreateSnapshot собирает снапшот из уже рассчитанного diff.
+// Раньше функция сама вызывала CompareConfigs, дублируя работу вызывающего кода.
+func CreateSnapshot(parentID *string, diff *Diff, author, message string) (*Snapshot, error) {
+	if diff == nil {
+		return nil, fmt.Errorf("не передан diff для снапшота")
+	}
+
+	id, err := generateSnapshotID()
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal diff: %v", err)
+		return nil, err
 	}
 
 	return &Snapshot{
-		ID:        generateSnapshotID(),
+		ID:        id,
 		ParentID:  parentID,
-		Patch:     string(patch),
+		Patch:     diff,
 		Author:    author,
 		Timestamp: time.Now(),
 		Message:   message,
 	}, nil
 }
+
+// SaveSnapshot записывает снапшот в директорию snapshotsDir.
 func SaveSnapshot(snapshot *Snapshot, snapshotsDir string) error {
-
-	if err := os.MkdirAll(snapshotsDir, 0755); err != nil {
-		return fmt.Errorf("failed to create snapshots directory: %v", err)
+	if err := os.MkdirAll(snapshotsDir, dirPerm); err != nil {
+		return fmt.Errorf("не удалось создать директорию снапшотов: %w", err)
 	}
 
-	filePath := filepath.Join(snapshotsDir, fmt.Sprintf("snapshot_%s.json", snapshot.ID))
-	file, err := os.Create(filePath)
+	data, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to create snapshot file: %v", err)
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(snapshot); err != nil {
-		return fmt.Errorf("failed to encode snapshot: %v", err)
+		return fmt.Errorf("не удалось сериализовать снапшот: %w", err)
 	}
 
+	path := filepath.Join(snapshotsDir, fmt.Sprintf("snapshot_%s.json", snapshot.ID))
+	if err := os.WriteFile(path, data, filePerm); err != nil {
+		return fmt.Errorf("не удалось записать снапшот: %w", err)
+	}
 	return nil
 }
 
+// LoadSnapshot читает снапшот по идентификатору.
 func LoadSnapshot(snapshotID, snapshotsDir string) (*Snapshot, error) {
-	filePath := filepath.Join(snapshotsDir, fmt.Sprintf("snapshot_%s.json", snapshotID))
-	file, err := os.ReadFile(filePath)
+	path := filepath.Join(snapshotsDir, fmt.Sprintf("snapshot_%s.json", snapshotID))
+
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read snapshot file: %v", err)
+		return nil, fmt.Errorf("не удалось прочитать снапшот %s: %w", snapshotID, err)
 	}
 
 	var snapshot Snapshot
-	if err := json.Unmarshal(file, &snapshot); err != nil {
-		return nil, fmt.Errorf("failed to decode snapshot: %v", err)
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return nil, fmt.Errorf("не удалось разобрать снапшот %s: %w", snapshotID, err)
 	}
-
 	return &snapshot, nil
 }
 
-func ApplySnapshot(targetConfig map[string]map[string]string, snapshot *Snapshot) (map[string]map[string]string, error) {
-
-	var diff map[string]map[string]interface{}
-	if err := json.Unmarshal([]byte(snapshot.Patch), &diff); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal patch: %v", err)
+// ApplySnapshot переносит в targetConfig значения левой стороны снапшота.
+func ApplySnapshot(targetConfig ConfigMap, snapshot *Snapshot) (ConfigMap, error) {
+	if snapshot == nil || snapshot.Patch == nil {
+		return nil, fmt.Errorf("снапшот пуст")
+	}
+	if targetConfig == nil {
+		targetConfig = make(ConfigMap)
 	}
 
-	for param, data := range diff {
-		if sourceVal, ok := data["source"]; ok && sourceVal != "N/A" {
-
-			parts := strings.SplitN(param, ".", 2)
-			if len(parts) != 2 {
-				continue
-			}
-
-			section := parts[0]
-			key := parts[1]
-
-			if _, exists := targetConfig[section]; !exists {
-				targetConfig[section] = make(map[string]string)
-			}
-
-			targetConfig[section][key] = fmt.Sprintf("%v", sourceVal)
+	for _, entry := range snapshot.Patch.Entries {
+		if !entry.LeftExists {
+			continue
 		}
+		if _, exists := targetConfig[entry.Section]; !exists {
+			targetConfig[entry.Section] = make(map[string]string)
+		}
+		targetConfig[entry.Section][entry.Key] = entry.Left
 	}
 
 	return targetConfig, nil
 }
 
-func generateSnapshotID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
+// generateSnapshotID возвращает идентификатор вида <unix-время>-<случайность>.
+// Прежний UnixNano давал коллизии при создании снапшотов в одном цикле.
+func generateSnapshotID() (string, error) {
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("не удалось сгенерировать идентификатор снапшота: %w", err)
+	}
+	return fmt.Sprintf("%d-%s", time.Now().Unix(), hex.EncodeToString(buf)), nil
 }
