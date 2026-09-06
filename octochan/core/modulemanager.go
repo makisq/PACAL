@@ -2,14 +2,16 @@ package core
 
 import (
 	"context"
-	"encoding/base64"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"log"
-
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,550 +20,677 @@ import (
 	"github.com/hashicorp/go-plugin"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
+// ModuleExtension — расширение файлов плагинов.
+const ModuleExtension = ".hcplugin"
+
+// Handshake общий для хоста и плагинов.
+var Handshake = plugin.HandshakeConfig{
+	ProtocolVersion:  1,
+	MagicCookieKey:   "OCTOCHAN_PLUGIN",
+	MagicCookieValue: "octochan-2025",
+}
+
+// PluginMap — набор плагинов, ожидаемых хостом.
+func PluginMap() map[string]plugin.Plugin {
+	return map[string]plugin.Plugin{"command": &CommandPlugin{}}
+}
+
+// CommandModule — интерфейс, который реализует плагин.
 type CommandModule interface {
 	GetCommands() []*cobra.Command
-	Init(config map[string]interface{}) error
+	Init(config map[string]any) error
 	Name() string
 	Version() string
 }
 
+// CommandPlugin связывает CommandModule с go-plugin.
 type CommandPlugin struct {
 	plugin.NetRPCUnsupportedPlugin
 	Impl CommandModule
 }
 
-func (p *CommandPlugin) GRPCServer(broker *plugin.GRPCBroker, s *grpc.Server) error {
+func (p *CommandPlugin) GRPCServer(_ *plugin.GRPCBroker, s *grpc.Server) error {
 	RegisterCommandModuleServer(s, &CommandGRPCServer{Impl: p.Impl})
 	return nil
 }
 
-func (p *CommandPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker, c *grpc.ClientConn) (interface{}, error) {
+func (p *CommandPlugin) GRPCClient(_ context.Context, _ *plugin.GRPCBroker, c *grpc.ClientConn) (any, error) {
 	return &CommandGRPCClient{Client: NewCommandModuleClient(c)}, nil
 }
 
-func (p *CommandPlugin) Server(broker *plugin.MuxBroker) (interface{}, error) {
-	return nil, nil
+// EnvPluginLogLevel задаёт уровень журналирования внутри процесса плагина.
+const EnvPluginLogLevel = "OCTOCHAN_PLUGIN_LOG_LEVEL"
+
+// ServeCommandModule запускает плагин. Вся обвязка go-plugin/gRPC живёт здесь,
+// поэтому бинарнику плагина достаточно реализовать CommandModule.
+func ServeCommandModule(impl CommandModule) {
+	// По умолчанию Warn: на Info go-plugin печатает служебные строки вроде
+	// "configuring server automatic mTLS" при каждом вызове любой команды.
+	level := hclog.Warn
+	if configured := os.Getenv(EnvPluginLogLevel); configured != "" {
+		level = hclog.LevelFromString(configured)
+	}
+
+	logger := hclog.New(&hclog.LoggerOptions{
+		Name:   impl.Name(),
+		Output: os.Stderr,
+		Level:  level,
+	})
+
+	plugin.Serve(&plugin.ServeConfig{
+		HandshakeConfig: Handshake,
+		Plugins:         map[string]plugin.Plugin{"command": &CommandPlugin{Impl: impl}},
+		GRPCServer:      plugin.DefaultGRPCServer,
+		Logger:          logger,
+	})
 }
 
+// ---------------------------------------------------------------------------
+// Серверная сторона (внутри процесса плагина)
+// ---------------------------------------------------------------------------
+
+// CommandGRPCServer обслуживает вызовы хоста внутри плагина.
 type CommandGRPCServer struct {
 	UnimplementedCommandModuleServer
 	Impl CommandModule
 }
 
-func (s *CommandGRPCServer) GetCommands(ctx context.Context, req *Empty) (*CommandsResponse, error) {
-	commands := s.Impl.GetCommands()
-	pbCommands := make([]*Command, len(commands))
-
-	for i, cmd := range commands {
-		var pbFlags []*Flag
-		if cmd.Flags() != nil {
-			cmd.Flags().VisitAll(func(flag *pflag.Flag) {
-				pbFlag := &Flag{
-					Name:      flag.Name,
-					Shorthand: flag.Shorthand,
-					Usage:     flag.Usage,
-					DefValue:  flag.DefValue,
-					Changed:   flag.Changed,
-					Type:      fmt.Sprintf("%T", flag.Value),
-				}
-				pbFlags = append(pbFlags, pbFlag)
-			})
-		}
-
-		pbAnnotations := make(map[string]string)
-		if cmd.Annotations != nil {
-			for k, v := range cmd.Annotations {
-				pbAnnotations[k] = v
-			}
-		}
-
-		pbCommands[i] = &Command{
-			Use:                       cmd.Use,
-			Short:                     cmd.Short,
-			Long:                      cmd.Long,
-			Example:                   cmd.Example,
-			ValidArgs:                 cmd.ValidArgs,
-			ValidArgsFunction:         cmd.ValidArgsFunction != nil,
-			Args:                      cmd.Args != nil,
-			ArgAliases:                cmd.ArgAliases,
-			BashCompletionFunction:    cmd.BashCompletionFunction,
-			Deprecated:                cmd.Deprecated,
-			Hidden:                    cmd.Hidden,
-			Annotations:               pbAnnotations,
-			Version:                   cmd.Version,
-			PersistentFlagSet:         cmd.HasPersistentFlags(),
-			LocalFlagSet:              cmd.HasLocalFlags(),
-			Flags:                     pbFlags,
-			RunFunction:               cmd.Run != nil, // Только маркер
-			PreRunFunction:            cmd.PreRun != nil,
-			PostRunFunction:           cmd.PostRun != nil,
-			PersistentPreRunFunction:  cmd.PersistentPreRun != nil,
-			PersistentPostRunFunction: cmd.PersistentPostRun != nil,
-		}
-	}
-
-	return &CommandsResponse{Commands: pbCommands}, nil
+func (s *CommandGRPCServer) GetCommands(_ context.Context, _ *Empty) (*CommandsResponse, error) {
+	return &CommandsResponse{Commands: CommandsToProto(s.Impl.GetCommands())}, nil
 }
 
-func (s *CommandGRPCServer) Name(ctx context.Context, req *Empty) (*NameResponse, error) {
+func (s *CommandGRPCServer) Name(_ context.Context, _ *Empty) (*NameResponse, error) {
 	return &NameResponse{Name: s.Impl.Name()}, nil
 }
 
-func (s *CommandGRPCServer) Version(ctx context.Context, req *Empty) (*VersionResponse, error) {
+func (s *CommandGRPCServer) Version(_ context.Context, _ *Empty) (*VersionResponse, error) {
 	return &VersionResponse{Version: s.Impl.Version()}, nil
 }
 
+func (s *CommandGRPCServer) Init(_ context.Context, cfg *Config) (*Empty, error) {
+	values := make(map[string]any, len(cfg.GetValues()))
+	for k, v := range cfg.GetValues() {
+		values[k] = v
+	}
+	if err := s.Impl.Init(values); err != nil {
+		return nil, err
+	}
+	return &Empty{}, nil
+}
+
+// resolveCommand находит команду по пути вида "test generate".
+func (s *CommandGRPCServer) resolveCommand(path string) (*cobra.Command, error) {
+	segments := strings.Fields(path)
+	if len(segments) == 0 {
+		return nil, fmt.Errorf("не указано имя команды")
+	}
+
+	var current *cobra.Command
+	candidates := s.Impl.GetCommands()
+
+	for _, segment := range segments {
+		var found *cobra.Command
+		for _, candidate := range candidates {
+			if commandName(candidate.Use) == segment || candidate.Name() == segment {
+				found = candidate
+				break
+			}
+		}
+		if found == nil {
+			return nil, fmt.Errorf("команда %q не найдена в модуле", path)
+		}
+		current = found
+		candidates = found.Commands()
+	}
+
+	return current, nil
+}
+
+// runCommand — общая реализация для Run/PreRun/PostRun.
+func (s *CommandGRPCServer) runCommand(req *CommandRequest, phase string) (*Empty, error) {
+	cmd, err := s.resolveCommand(req.GetName())
+	if err != nil {
+		return nil, err
+	}
+
+	for name, value := range req.GetFlags() {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			return nil, fmt.Errorf("не удалось установить флаг %s: %w", name, err)
+		}
+	}
+
+	args := req.GetArgs()
+
+	switch phase {
+	case "pre":
+		if cmd.PreRunE != nil {
+			return &Empty{}, cmd.PreRunE(cmd, args)
+		}
+		if cmd.PreRun != nil {
+			cmd.PreRun(cmd, args)
+		}
+	case "post":
+		if cmd.PostRunE != nil {
+			return &Empty{}, cmd.PostRunE(cmd, args)
+		}
+		if cmd.PostRun != nil {
+			cmd.PostRun(cmd, args)
+		}
+	default:
+		// Аргументы валидируются так же, как это сделала бы cobra локально.
+		if cmd.Args != nil {
+			if err := cmd.Args(cmd, args); err != nil {
+				return nil, err
+			}
+		}
+		if cmd.RunE != nil {
+			return &Empty{}, cmd.RunE(cmd, args)
+		}
+		if cmd.Run != nil {
+			cmd.Run(cmd, args)
+		}
+	}
+
+	return &Empty{}, nil
+}
+
+func (s *CommandGRPCServer) RunCommand(_ context.Context, req *CommandRequest) (*Empty, error) {
+	return s.runCommand(req, "run")
+}
+
+func (s *CommandGRPCServer) PreRunCommand(_ context.Context, req *CommandRequest) (*Empty, error) {
+	return s.runCommand(req, "pre")
+}
+
+func (s *CommandGRPCServer) PostRunCommand(_ context.Context, req *CommandRequest) (*Empty, error) {
+	return s.runCommand(req, "post")
+}
+
+// ---------------------------------------------------------------------------
+// Клиентская сторона (внутри octochan)
+// ---------------------------------------------------------------------------
+
+// CommandGRPCClient — представление модуля на стороне хоста.
 type CommandGRPCClient struct {
 	Client CommandModuleClient
+}
+
+// commandTimeout — предельное время выполнения команды модуля.
+// Прежние 10 секунд не переживал ни один рестарт СУБД.
+func commandTimeout() time.Duration {
+	if d := viper.GetDuration("defaults.module_command_timeout"); d > 0 {
+		return d
+	}
+	return 10 * time.Minute
 }
 
 func (c *CommandGRPCClient) GetCommands() []*cobra.Command {
 	resp, err := c.Client.GetCommands(context.Background(), &Empty{})
 	if err != nil {
-		log.Printf("Failed to get commands from plugin: %v", err)
+		log.Printf("не удалось получить команды модуля: %v", err)
 		return nil
 	}
-	return c.CreateCommandsFromProto(resp.Commands)
+	return c.CreateCommandsFromProto(resp.GetCommands(), nil)
 }
 
-func (c *CommandGRPCClient) CreateCommandsFromProto(pbCommands []*Command) []*cobra.Command {
-	commands := make([]*cobra.Command, len(pbCommands))
+// CreateCommandsFromProto строит команды cobra по описанию из плагина.
+// parentPath хранит путь до родителя, чтобы вызов подкоманды адресовался
+// как "test generate", а не по строке Use целиком.
+func (c *CommandGRPCClient) CreateCommandsFromProto(pbCommands []*Command, parentPath []string) []*cobra.Command {
+	commands := make([]*cobra.Command, 0, len(pbCommands))
 
-	for i, pbCmd := range pbCommands {
+	for _, pbCmd := range pbCommands {
+		if pbCmd == nil {
+			continue
+		}
+
+		name := commandName(pbCmd.GetUse())
+		if name == "" {
+			continue
+		}
+		path := append(append([]string{}, parentPath...), name)
+		remotePath := strings.Join(path, " ")
+
 		cmd := &cobra.Command{
-			Use:                    pbCmd.Use,
-			Aliases:                pbCmd.Aliases,
-			Short:                  pbCmd.Short,
-			Long:                   pbCmd.Long,
-			Example:                pbCmd.Example,
-			ValidArgs:              pbCmd.ValidArgs,
-			ArgAliases:             pbCmd.ArgAliases,
-			BashCompletionFunction: pbCmd.BashCompletionFunction,
-			Deprecated:             pbCmd.Deprecated,
-			Hidden:                 pbCmd.Hidden,
-			Annotations:            pbCmd.Annotations,
-			Version:                pbCmd.Version,
-			SilenceErrors:          pbCmd.SilenceErrors,
-			SilenceUsage:           pbCmd.SilenceUsage,
-			TraverseChildren:       pbCmd.TraverseChildren,
+			Use:                    pbCmd.GetUse(),
+			Aliases:                pbCmd.GetAliases(),
+			Short:                  pbCmd.GetShort(),
+			Long:                   pbCmd.GetLong(),
+			Example:                pbCmd.GetExample(),
+			ValidArgs:              pbCmd.GetValidArgs(),
+			ArgAliases:             pbCmd.GetArgAliases(),
+			BashCompletionFunction: pbCmd.GetBashCompletionFunction(),
+			Deprecated:             pbCmd.GetDeprecated(),
+			Hidden:                 pbCmd.GetHidden(),
+			Annotations:            pbCmd.GetAnnotations(),
+			Version:                pbCmd.GetVersion(),
+			SilenceErrors:          pbCmd.GetSilenceErrors(),
+			SilenceUsage:           pbCmd.GetSilenceUsage(),
+			TraverseChildren:       pbCmd.GetTraverseChildren(),
 			FParseErrWhitelist: cobra.FParseErrWhitelist{
-				UnknownFlags: pbCmd.FparseErrWhitelist.GetUnknownFlags(),
+				UnknownFlags: pbCmd.GetFparseErrWhitelist().GetUnknownFlags(),
 			},
 		}
 
-		if pbCmd.RunFunction {
-			cmd.Run = func(cmd *cobra.Command, args []string) {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				_, err := c.Client.RunCommand(ctx, &CommandRequest{
-					Name: cmd.Use,
-					Args: args,
-				})
-				if err != nil {
-					cmd.PrintErrln("Command execution error:", err)
-				}
-			}
+		applyFlags(cmd.Flags(), pbCmd.GetFlags())
+		applyFlags(cmd.PersistentFlags(), pbCmd.GetPersistentFlags())
+
+		if pbCmd.GetRunFunction() {
+			cmd.RunE = c.remoteRunner(remotePath, c.Client.RunCommand)
+		}
+		if pbCmd.GetPreRunFunction() {
+			cmd.PreRunE = c.remoteRunner(remotePath, c.Client.PreRunCommand)
+		}
+		if pbCmd.GetPostRunFunction() {
+			cmd.PostRunE = c.remoteRunner(remotePath, c.Client.PostRunCommand)
 		}
 
-		if pbCmd.PreRunFunction {
-			cmd.PreRun = func(cmd *cobra.Command, args []string) {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_, err := c.Client.PreRunCommand(ctx, &CommandRequest{
-					Name: cmd.Use,
-					Args: args,
-				})
-				if err != nil {
-					cmd.PrintErrln("PreRun error:", err)
-				}
-			}
+		for _, sub := range c.CreateCommandsFromProto(pbCmd.GetCommands(), path) {
+			cmd.AddCommand(sub)
 		}
 
-		if pbCmd.PostRunFunction {
-			cmd.PostRun = func(cmd *cobra.Command, args []string) {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_, err := c.Client.PostRunCommand(ctx, &CommandRequest{
-					Name: cmd.Use,
-					Args: args,
-				})
-				if err != nil {
-					cmd.PrintErrln("PostRun error:", err)
-				}
-			}
-		}
-
-		for _, pbFlag := range pbCmd.Flags {
-			switch {
-			case strings.Contains(pbFlag.Type, "bool"):
-				val, err := strconv.ParseBool(pbFlag.DefValue)
-				if err != nil {
-					log.Printf("Invalid bool value for flag %s: %v", pbFlag.Name, err)
-					val = false
-				}
-				cmd.Flags().BoolP(pbFlag.Name, pbFlag.Shorthand, val, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "int"):
-				intVal, err := strconv.Atoi(pbFlag.DefValue)
-				if err != nil {
-					log.Printf("Invalid int value for flag %s: %v", pbFlag.Name, err)
-					intVal = 0
-				}
-				cmd.Flags().IntP(pbFlag.Name, pbFlag.Shorthand, intVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "int32"):
-				intVal, err := strconv.ParseInt(pbFlag.DefValue, 10, 32)
-				if err != nil {
-					log.Printf("Invalid int32 value for flag %s: %v", pbFlag.Name, err)
-					intVal = 0
-				}
-				cmd.Flags().Int32P(pbFlag.Name, pbFlag.Shorthand, int32(intVal), pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "int64"):
-				intVal, err := strconv.ParseInt(pbFlag.DefValue, 10, 64)
-				if err != nil {
-					log.Printf("Invalid int64 value for flag %s: %v", pbFlag.Name, err)
-					intVal = 0
-				}
-				cmd.Flags().Int64P(pbFlag.Name, pbFlag.Shorthand, intVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "float32"):
-				floatVal, err := strconv.ParseFloat(pbFlag.DefValue, 32)
-				if err != nil {
-					log.Printf("Invalid float32 value for flag %s: %v", pbFlag.Name, err)
-					floatVal = 0
-				}
-				cmd.Flags().Float32P(pbFlag.Name, pbFlag.Shorthand, float32(floatVal), pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "float64"):
-				floatVal, err := strconv.ParseFloat(pbFlag.DefValue, 64)
-				if err != nil {
-					log.Printf("Invalid float64 value for flag %s: %v", pbFlag.Name, err)
-					floatVal = 0
-				}
-				cmd.Flags().Float64P(pbFlag.Name, pbFlag.Shorthand, floatVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "stringSlice"):
-				var sliceVal []string
-				if pbFlag.DefValue != "" {
-					sliceVal = strings.Split(pbFlag.DefValue, ",")
-					for i, v := range sliceVal {
-						sliceVal[i] = strings.TrimSpace(v)
-					}
-				}
-				cmd.Flags().StringSliceP(pbFlag.Name, pbFlag.Shorthand, sliceVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "stringArray"):
-				var arrVal []string
-				if pbFlag.DefValue != "" {
-					arrVal = strings.Split(pbFlag.DefValue, ",")
-				}
-				cmd.Flags().StringArrayP(pbFlag.Name, pbFlag.Shorthand, arrVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "duration"):
-				durVal, err := time.ParseDuration(pbFlag.DefValue)
-				if err != nil {
-					log.Printf("Invalid duration value for flag %s: %v", pbFlag.Name, err)
-					durVal = 0
-				}
-				cmd.Flags().DurationP(pbFlag.Name, pbFlag.Shorthand, durVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "time"):
-				cmd.Flags().StringP(pbFlag.Name, pbFlag.Shorthand, pbFlag.DefValue, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "bytes"):
-				bytesVal, err := base64.StdEncoding.DecodeString(pbFlag.DefValue)
-				if err != nil {
-					log.Printf("Invalid bytes value for flag %s: %v", pbFlag.Name, err)
-					bytesVal = []byte{}
-				}
-				cmd.Flags().BytesHexP(pbFlag.Name, pbFlag.Shorthand, bytesVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "count"):
-				cmd.Flags().CountP(pbFlag.Name, pbFlag.Shorthand, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "string"):
-				cmd.Flags().StringP(pbFlag.Name, pbFlag.Shorthand, pbFlag.DefValue, pbFlag.Usage)
-
-			default:
-				log.Printf("Unsupported flag type: %s for flag %s", pbFlag.Type, pbFlag.Name)
-				cmd.Flags().StringP(pbFlag.Name, pbFlag.Shorthand, pbFlag.DefValue, pbFlag.Usage)
-			}
-		}
-
-		for _, pbFlag := range pbCmd.PersistentFlags {
-			switch {
-			case strings.Contains(pbFlag.Type, "bool"):
-				val, _ := strconv.ParseBool(pbFlag.DefValue)
-				cmd.PersistentFlags().BoolP(pbFlag.Name, pbFlag.Shorthand, val, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "int"):
-				intVal, _ := strconv.Atoi(pbFlag.DefValue)
-				cmd.PersistentFlags().IntP(pbFlag.Name, pbFlag.Shorthand, intVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "int32"):
-				intVal, _ := strconv.ParseInt(pbFlag.DefValue, 10, 32)
-				cmd.PersistentFlags().Int32P(pbFlag.Name, pbFlag.Shorthand, int32(intVal), pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "int64"):
-				intVal, _ := strconv.ParseInt(pbFlag.DefValue, 10, 64)
-				cmd.PersistentFlags().Int64P(pbFlag.Name, pbFlag.Shorthand, intVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "float32"):
-				floatVal, _ := strconv.ParseFloat(pbFlag.DefValue, 32)
-				cmd.PersistentFlags().Float32P(pbFlag.Name, pbFlag.Shorthand, float32(floatVal), pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "float64"):
-				floatVal, _ := strconv.ParseFloat(pbFlag.DefValue, 64)
-				cmd.PersistentFlags().Float64P(pbFlag.Name, pbFlag.Shorthand, floatVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "stringSlice"):
-				var sliceVal []string
-				if pbFlag.DefValue != "" {
-					sliceVal = strings.Split(pbFlag.DefValue, ",")
-				}
-				cmd.PersistentFlags().StringSliceP(pbFlag.Name, pbFlag.Shorthand, sliceVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "stringArray"):
-				var arrVal []string
-				if pbFlag.DefValue != "" {
-					arrVal = strings.Split(pbFlag.DefValue, ",")
-				}
-				cmd.PersistentFlags().StringArrayP(pbFlag.Name, pbFlag.Shorthand, arrVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "duration"):
-				durVal, _ := time.ParseDuration(pbFlag.DefValue)
-				cmd.PersistentFlags().DurationP(pbFlag.Name, pbFlag.Shorthand, durVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "time"):
-				cmd.PersistentFlags().StringP(pbFlag.Name, pbFlag.Shorthand, pbFlag.DefValue, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "bytes"):
-				bytesVal, _ := base64.StdEncoding.DecodeString(pbFlag.DefValue)
-				cmd.PersistentFlags().BytesHexP(pbFlag.Name, pbFlag.Shorthand, bytesVal, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "count"):
-				cmd.PersistentFlags().CountP(pbFlag.Name, pbFlag.Shorthand, pbFlag.Usage)
-
-			case strings.Contains(pbFlag.Type, "string"):
-				cmd.PersistentFlags().StringP(pbFlag.Name, pbFlag.Shorthand, pbFlag.DefValue, pbFlag.Usage)
-
-			default:
-				log.Printf("Unsupported persistent flag type: %s for flag %s", pbFlag.Type, pbFlag.Name)
-				cmd.PersistentFlags().StringP(pbFlag.Name, pbFlag.Shorthand, pbFlag.DefValue, pbFlag.Usage)
-			}
-		}
-
-		if len(pbCmd.Commands) > 0 {
-			subCommands := c.CreateCommandsFromProto(pbCmd.Commands)
-			for _, subCmd := range subCommands {
-				cmd.AddCommand(subCmd)
-			}
-		}
-
-		commands[i] = cmd
+		commands = append(commands, cmd)
 	}
 
 	return commands
 }
 
-func (c *CommandGRPCClient) Init(config map[string]interface{}) error {
-	values := make(map[string]string)
-	for k, v := range config {
-		if s, ok := v.(string); ok {
-			values[k] = s
-		}
+type remoteCall func(context.Context, *CommandRequest, ...grpc.CallOption) (*Empty, error)
+
+// remoteRunner возвращает обработчик, пробрасывающий вызов в плагин.
+// Ошибка возвращается наружу (RunE), а не печатается — иначе octochan
+// завершался с кодом 0 даже при падении команды модуля.
+func (c *CommandGRPCClient) remoteRunner(path string, call remoteCall) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		ctx, cancel := context.WithTimeout(cmd.Context(), commandTimeout())
+		defer cancel()
+
+		// Передаём только явно заданные флаги: значения по умолчанию
+		// плагин знает и сам. Раньше флаги не передавались вовсе, и команда
+		// модуля всегда выполнялась с дефолтами.
+		flags := make(map[string]string)
+		cmd.Flags().Visit(func(f *pflag.Flag) {
+			flags[f.Name] = f.Value.String()
+		})
+		cmd.PersistentFlags().Visit(func(f *pflag.Flag) {
+			flags[f.Name] = f.Value.String()
+		})
+
+		_, err := call(ctx, &CommandRequest{
+			Name:  path,
+			Args:  args,
+			Flags: flags,
+		})
+		return unwrapGRPCError(err)
 	}
-	_, err := c.Client.Init(context.Background(), &Config{Values: values})
+}
+
+// unwrapGRPCError убирает обёртку транспорта из сообщения об ошибке:
+// пользователю нужен текст, который вернул модуль, а не
+// "rpc error: code = Unknown desc = ...".
+func unwrapGRPCError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	st, ok := status.FromError(err)
+	if !ok {
+		return err
+	}
+
+	switch st.Code() {
+	case codes.DeadlineExceeded:
+		return fmt.Errorf("модуль не ответил за %s: %s", commandTimeout(), st.Message())
+	case codes.Unavailable:
+		return fmt.Errorf("модуль недоступен: %s", st.Message())
+	default:
+		return errors.New(st.Message())
+	}
+}
+
+func (c *CommandGRPCClient) Init(config map[string]any) error {
+	values := make(map[string]string, len(config))
+	for k, v := range config {
+		values[k] = fmt.Sprintf("%v", v)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, err := c.Client.Init(ctx, &Config{Values: values})
 	return err
 }
 
 func (c *CommandGRPCClient) Name() string {
-	resp, err := c.Client.Name(context.Background(), &Empty{})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.Client.Name(ctx, &Empty{})
 	if err != nil {
 		return ""
 	}
-	return resp.Name
+	return resp.GetName()
 }
 
 func (c *CommandGRPCClient) Version() string {
-	resp, err := c.Client.Version(context.Background(), &Empty{})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.Client.Version(ctx, &Empty{})
 	if err != nil {
 		return ""
 	}
-	return resp.Version
+	return resp.GetVersion()
 }
 
+// ---------------------------------------------------------------------------
+// Менеджер модулей
+// ---------------------------------------------------------------------------
+
+type loadedModule struct {
+	name     string
+	version  string
+	path     string
+	client   *plugin.Client
+	commands []*cobra.Command
+}
+
+// ModuleManager владеет процессами плагинов и их командами.
 type ModuleManager struct {
-	commands      []*cobra.Command
-	pluginClients map[string]*plugin.Client
-	mu            sync.Mutex
+	mu      sync.Mutex
+	modules map[string]*loadedModule // ключ — путь до файла модуля
 }
 
-var (
-	globalModuleManager *ModuleManager
-	once                sync.Once
-)
+var globalModuleManager = NewModuleManager()
 
-func init() {
-	once.Do(func() {
-		globalModuleManager = &ModuleManager{
-			pluginClients: make(map[string]*plugin.Client),
+// NewModuleManager создаёт независимый менеджер модулей.
+// Нужен, например, команде inspect: она поднимает модуль во временном
+// менеджере и гасит его, не трогая набор команд текущей сессии.
+func NewModuleManager() *ModuleManager {
+	return &ModuleManager{modules: make(map[string]*loadedModule)}
+}
+
+// GetModuleManager возвращает менеджер модулей процесса.
+func GetModuleManager() *ModuleManager { return globalModuleManager }
+
+// ErrChecksumMissing возвращается, если рядом с модулем нет файла контрольной суммы.
+var ErrChecksumMissing = errors.New("отсутствует контрольная сумма модуля")
+
+// ChecksumPath — путь до файла с контрольной суммой модуля.
+func ChecksumPath(modulePath string) string { return modulePath + ".sha256" }
+
+// FileChecksum считает SHA-256 файла.
+func FileChecksum(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return nil, err
+	}
+	return h.Sum(nil), nil
+}
+
+// WriteChecksum фиксирует текущее содержимое модуля как доверенное.
+func WriteChecksum(modulePath string) error {
+	sum, err := FileChecksum(modulePath)
+	if err != nil {
+		return fmt.Errorf("не удалось посчитать контрольную сумму: %w", err)
+	}
+	return os.WriteFile(ChecksumPath(modulePath), []byte(hex.EncodeToString(sum)), filePerm)
+}
+
+func expectedChecksum(modulePath string) ([]byte, error) {
+	data, err := os.ReadFile(ChecksumPath(modulePath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrChecksumMissing
 		}
-	})
+		return nil, err
+	}
+
+	sum, err := hex.DecodeString(strings.TrimSpace(string(data)))
+	if err != nil {
+		return nil, fmt.Errorf("повреждён файл контрольной суммы %s: %w", ChecksumPath(modulePath), err)
+	}
+	return sum, nil
 }
 
-func GetModuleManager() *ModuleManager {
-	return globalModuleManager
-}
+// LoadModule запускает плагин и регистрирует его команды.
+//
+// Плагин — это исполняемый файл, который запускается отдельным процессом.
+// Раньше загружалось всё, что появилось в директории модулей, без проверок,
+// а go-plugin настраивался без SecureConfig и AutoMTLS.
+func (m *ModuleManager) LoadModule(path string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("не удалось определить путь модуля: %w", err)
+	}
 
-func (m *ModuleManager) LoadHashicorpPlugin(path string) error {
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return fmt.Errorf("модуль недоступен: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s — это директория, а не модуль", absPath)
+	}
+
+	secureConfig, err := m.secureConfigFor(absPath)
+	if err != nil {
+		return err
+	}
+
 	logger := hclog.New(&hclog.LoggerOptions{
-		Name:   "plugin-loader",
-		Output: os.Stdout,
-		Level:  hclog.Debug,
+		Name: "plugin-loader",
+		// Логи плагина идут в stderr: stdout занят полезным выводом команд
+		// и раньше отладочные строки ломали конвейеры.
+		Output: os.Stderr,
+		Level:  pluginLogLevel(),
 	})
+
+	moduleCmd := exec.Command(absPath)
+	moduleCmd.Env = append(os.Environ(),
+		EnvPluginLogLevel+"="+viper.GetString("defaults.plugin_log_level"))
 
 	client := plugin.NewClient(&plugin.ClientConfig{
-		HandshakeConfig: plugin.HandshakeConfig{
-			ProtocolVersion:  1,
-			MagicCookieKey:   "OCTOCHAN_PLUGIN",
-			MagicCookieValue: "octochan-2025",
-		},
-		Plugins: map[string]plugin.Plugin{
-			"command": &CommandPlugin{},
-		},
-		Cmd: exec.Command(path),
-		AllowedProtocols: []plugin.Protocol{
-			plugin.ProtocolGRPC,
-		},
-		Logger:       logger,
-		StartTimeout: 30 * time.Second,
+		HandshakeConfig:  Handshake,
+		Plugins:          PluginMap(),
+		Cmd:              moduleCmd,
+		AllowedProtocols: []plugin.Protocol{plugin.ProtocolGRPC},
+		Logger:           logger,
+		StartTimeout:     30 * time.Second,
+		SecureConfig:     secureConfig,
+		AutoMTLS:         true,
+		// Без этого вывод команд модуля пропадал: go-plugin перехватывает
+		// stdout дочернего процесса и по умолчанию отдаёт его в свой логгер
+		// на уровне debug, то есть в никуда.
+		SyncStdout: os.Stdout,
+		SyncStderr: os.Stderr,
 	})
 
-	rpcClient, err := client.Client()
+	module, err := dispenseCommandModule(client)
 	if err != nil {
 		client.Kill()
-		return fmt.Errorf("GRPC connection failed: %w", err)
+		return err
+	}
+
+	name := module.Name()
+	if name == "" {
+		client.Kill()
+		return fmt.Errorf("модуль %s не сообщил имя", absPath)
+	}
+
+	commands := module.GetCommands()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Перезагрузка того же файла: гасим прежний процесс, иначе он оставался
+	// висеть, а его команды дублировались в списке.
+	if prev, ok := m.modules[absPath]; ok {
+		prev.client.Kill()
+		delete(m.modules, absPath)
+	}
+	for otherPath, other := range m.modules {
+		if other.name == name {
+			other.client.Kill()
+			delete(m.modules, otherPath)
+		}
+	}
+
+	m.modules[absPath] = &loadedModule{
+		name:     name,
+		version:  module.Version(),
+		path:     absPath,
+		client:   client,
+		commands: commands,
+	}
+
+	return nil
+}
+
+func (m *ModuleManager) secureConfigFor(absPath string) (*plugin.SecureConfig, error) {
+	sum, err := expectedChecksum(absPath)
+	switch {
+	case err == nil:
+		return &plugin.SecureConfig{Checksum: sum, Hash: sha256.New()}, nil
+	case errors.Is(err, ErrChecksumMissing):
+		if viper.GetBool("defaults.allow_unverified_modules") {
+			log.Printf("модуль %s загружается без проверки контрольной суммы "+
+				"(defaults.allow_unverified_modules=true)", filepath.Base(absPath))
+			return nil, nil
+		}
+		return nil, fmt.Errorf(
+			"%w: выполните '!install %s', чтобы зафиксировать его как доверенный, "+
+				"или включите defaults.allow_unverified_modules",
+			ErrChecksumMissing, absPath)
+	default:
+		return nil, err
+	}
+}
+
+func dispenseCommandModule(client *plugin.Client) (CommandModule, error) {
+	rpcClient, err := client.Client()
+	if err != nil {
+		return nil, fmt.Errorf("не удалось подключиться к модулю: %w", err)
 	}
 
 	raw, err := rpcClient.Dispense("command")
 	if err != nil {
-		client.Kill()
-		return fmt.Errorf("failed to dispense command interface: %w", err)
+		return nil, fmt.Errorf("модуль не предоставляет интерфейс command: %w", err)
 	}
 
 	module, ok := raw.(CommandModule)
 	if !ok {
-		client.Kill()
-		return fmt.Errorf("invalid module type: expected CommandModule")
+		return nil, fmt.Errorf("неверный тип модуля: ожидался CommandModule, получен %T", raw)
+	}
+	return module, nil
+}
+
+func pluginLogLevel() hclog.Level {
+	if level := viper.GetString("defaults.plugin_log_level"); level != "" {
+		return hclog.LevelFromString(level)
+	}
+	return hclog.Warn
+}
+
+// UnloadModule гасит модуль по пути файла.
+func (m *ModuleManager) UnloadModule(path string) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.pluginClients[module.Name()] = client
 
-	if grpcClient, ok := module.(*CommandGRPCClient); ok {
-		cobraCommands := module.GetCommands()
-		pbCommands := make([]*Command, len(cobraCommands))
-		for i, cmd := range cobraCommands {
-			pbCommands[i] = convertCobraToProto(cmd)
-		}
-		m.commands = append(m.commands, grpcClient.CreateCommandsFromProto(pbCommands)...)
-	} else {
-		m.commands = append(m.commands, module.GetCommands()...)
-	}
-
-	logger.Info("Plugin loaded successfully",
-		"name", module.Name(),
-		"version", module.Version())
-
-	return nil
-}
-
-func convertCobraToProto(cmd *cobra.Command) *Command {
-	var pbFlags []*Flag
-	if cmd.Flags() != nil {
-		cmd.Flags().VisitAll(func(flag *pflag.Flag) {
-			pbFlag := &Flag{
-				Name:      flag.Name,
-				Shorthand: flag.Shorthand,
-				Usage:     flag.Usage,
-				DefValue:  flag.DefValue,
-				Changed:   flag.Changed,
-				Type:      fmt.Sprintf("%T", flag.Value),
-			}
-			pbFlags = append(pbFlags, pbFlag)
-		})
-	}
-
-	pbAnnotations := make(map[string]string)
-	if cmd.Annotations != nil {
-		for k, v := range cmd.Annotations {
-			pbAnnotations[k] = v
-		}
-	}
-
-	return &Command{
-		Use:                       cmd.Use,
-		Short:                     cmd.Short,
-		Long:                      cmd.Long,
-		Example:                   cmd.Example,
-		ValidArgs:                 cmd.ValidArgs,
-		ValidArgsFunction:         cmd.ValidArgsFunction != nil,
-		Args:                      cmd.Args != nil,
-		ArgAliases:                cmd.ArgAliases,
-		BashCompletionFunction:    cmd.BashCompletionFunction,
-		Deprecated:                cmd.Deprecated,
-		Hidden:                    cmd.Hidden,
-		Annotations:               pbAnnotations,
-		Version:                   cmd.Version,
-		PersistentFlagSet:         cmd.HasPersistentFlags(),
-		LocalFlagSet:              cmd.HasLocalFlags(),
-		Flags:                     pbFlags,
-		RunFunction:               cmd.Run != nil,
-		PreRunFunction:            cmd.PreRun != nil,
-		PostRunFunction:           cmd.PostRun != nil,
-		PersistentPreRunFunction:  cmd.PersistentPreRun != nil,
-		PersistentPostRunFunction: cmd.PersistentPostRun != nil,
+	if module, ok := m.modules[absPath]; ok {
+		module.client.Kill()
+		delete(m.modules, absPath)
 	}
 }
 
+// GetCommands возвращает копию списка команд всех модулей.
 func (m *ModuleManager) GetCommands() []*cobra.Command {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	commands := make([]*cobra.Command, len(m.commands))
-	copy(commands, m.commands)
-	return m.commands
+
+	paths := make([]string, 0, len(m.modules))
+	for path := range m.modules {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths) // стабильный порядок команд между запусками
+
+	var commands []*cobra.Command
+	for _, path := range paths {
+		commands = append(commands, m.modules[path].commands...)
+	}
+	return commands
 }
 
+// ModuleInfo — краткие сведения о загруженном модуле.
+type ModuleInfo struct {
+	Name     string
+	Version  string
+	Path     string
+	Commands int
+}
+
+// LoadedModules перечисляет загруженные модули.
+func (m *ModuleManager) LoadedModules() []ModuleInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	infos := make([]ModuleInfo, 0, len(m.modules))
+	for _, module := range m.modules {
+		infos = append(infos, ModuleInfo{
+			Name:     module.name,
+			Version:  module.version,
+			Path:     module.path,
+			Commands: len(module.commands),
+		})
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
+	return infos
+}
+
+// Cleanup гасит все процессы плагинов.
 func (m *ModuleManager) Cleanup() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for name, client := range m.pluginClients {
-		client.Kill()
-		delete(m.pluginClients, name)
+	for path, module := range m.modules {
+		module.client.Kill()
+		delete(m.modules, path)
 	}
 }
 
+// LoadModulesFromDir загружает все плагины из директории.
+// Ошибки отдельных модулей собираются, а не теряются в логе.
 func (m *ModuleManager) LoadModulesFromDir(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("failed to read modules directory: %w", err)
+		return fmt.Errorf("не удалось прочитать директорию модулей: %w", err)
 	}
 
+	var errs []error
 	for _, entry := range entries {
-		if filepath.Ext(entry.Name()) == ".hcplugin" {
-			modulePath := filepath.Join(dir, entry.Name())
-			if err := m.LoadHashicorpPlugin(modulePath); err != nil {
-				log.Printf("Failed to load plugin %s: %v", entry.Name(), err)
-				continue
-			}
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ModuleExtension {
+			continue
+		}
+		if err := m.LoadModule(filepath.Join(dir, entry.Name())); err != nil {
+			errs = append(errs, fmt.Errorf("модуль %s: %w", entry.Name(), err))
 		}
 	}
-	return nil
+
+	return errors.Join(errs...)
 }
