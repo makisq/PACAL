@@ -80,6 +80,14 @@ func init() {
 // вызов из CI считался успешным. Плюс defer с Cleanup стоял в main, а часть
 // путей выполнения уходила через os.Exit — процессы плагинов оставались жить.
 func Execute() int {
+	// cobra по умолчанию пишет Print/Printf/Println в stderr (OutOrStderr
+	// возвращает os.Stderr, пока выход не задан явно). Без этой строки весь
+	// полезный вывод уходил в stderr, и конвейеры вида
+	// `ochan print a.conf | ochan diff - b.conf` получали пустой stdin,
+	// а перенаправление в файл давало пустой файл.
+	rootCmd.SetOut(os.Stdout)
+	rootCmd.SetErr(os.Stderr)
+
 	if err := initConfig(); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		return 1
