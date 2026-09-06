@@ -1,97 +1,78 @@
 package module
 
 import (
+	"context"
 	"fmt"
-	"octochan/core"
-	"strings"
 	"time"
 
-	"github.com/spf13/viper"
+	"octochan/core"
 )
 
+// PostgresConfigFilesModule забирает конфигурационные файлы PostgreSQL.
 type PostgresConfigFilesModule struct {
-	data *core.ScenarioData
+	data   *core.ScenarioData
+	params Params
 }
 
+// NewPostgresConfigFilesModule создаёт модуль сервиса
+// postgresql_se_get_config_files.
 func NewPostgresConfigFilesModule(data *core.ScenarioData) (core.ScenarioModule, error) {
-	return &PostgresConfigFilesModule{data: data}, nil
+	return &PostgresConfigFilesModule{data: data, params: Params(data.Parameters)}, nil
 }
 
 func (m *PostgresConfigFilesModule) Validate() error {
-	requiredParams := []string{
-		"port",
-		"config_list",
-		"itemname",
+	if err := m.params.RequireNonEmpty("port", "config_list", "itemname"); err != nil {
+		return err
 	}
-
-	for _, param := range requiredParams {
-		if _, ok := m.data.Parameters[param]; !ok {
-			return fmt.Errorf("отсутствует обязательный параметр: %s", param)
-		}
+	if len(m.params.StringList("config_list")) == 0 {
+		return fmt.Errorf("параметр config_list пуст")
 	}
 
 	if len(m.data.Targets) == 0 {
 		return fmt.Errorf("не указаны целевые серверы (targets)")
 	}
-
 	for i, target := range m.data.Targets {
 		if target.SVMCI == "" {
-			return fmt.Errorf("пустой SVMCI в target #%d", i+1)
+			return fmt.Errorf("пустой svm_ci в target #%d", i+1)
 		}
 	}
-
 	return nil
 }
 
-func (m *PostgresConfigFilesModule) GenerateRequests() ([]*core.APIRequest, error) {
-	var requests []*core.APIRequest
-	apiURL := viper.GetString("defaults.api_url")
-	token := viper.GetString("defaults.api_token")
-
-	// Базовый payload
-	basePayload := map[string]interface{}{
-		"service":  "postgresql_se_get_config_files",
-		"start_at": "now",
-		"datetime": time.Now().Format(time.RFC3339),
-		"params": map[string]interface{}{
-			"hosts": []map[string]interface{}{},
-		},
-	}
-
-	hostParams := map[string]interface{}{
-		"port":        m.data.Parameters["port"],
-		"itemname":    m.data.Parameters["itemname"],
-		"config_list": strings.Split(m.data.Parameters["config_list"].(string), ","),
-	}
-
-	basePayload["params"].(map[string]interface{})["hosts"] = append(
-		basePayload["params"].(map[string]interface{})["hosts"].([]map[string]interface{}),
-		hostParams,
-	)
-
+func (m *PostgresConfigFilesModule) GenerateRequests(_ context.Context, _ *core.APIClient) ([]*core.APIRequest, error) {
+	tableID := m.params.String("table_id", defaultTableID)
+	configList := m.params.StringList("config_list")
+	requests := make([]*core.APIRequest, 0, len(m.data.Targets))
 
 	for _, target := range m.data.Targets {
-		payload := core.DeepCopyMap(basePayload)
-
-		items, err := core.PrepareScenarioItems([]core.Target{target})
+		items, err := core.PrepareScenarioItems([]core.Target{target}, tableID)
 		if err != nil {
 			return nil, err
 		}
-		payload["items"] = items
+
+		// Описание хоста собирается для каждой цели отдельно и содержит её
+		// svm_ci. Прежняя версия строила hosts один раз до цикла, поэтому
+		// во все запросы уезжал один и тот же (и притом безымянный) хост.
+		host := map[string]any{
+			"svm_ci":      target.SVMCI,
+			"port":        m.params.Int("port", 5432),
+			"itemname":    m.params.String("itemname", ""),
+			"config_list": configList,
+		}
 
 		requests = append(requests, &core.APIRequest{
 			Method: "POST",
-			URL:    apiURL,
-			Headers: map[string]string{
-				"accept":        "application/json",
-				"Authorization": "Token " + token,
-				"Content-Type":  "application/json",
+			Body: map[string]any{
+				"service":  "postgresql_se_get_config_files",
+				"start_at": "now",
+				"datetime": time.Now().Format(time.RFC3339),
+				"params": map[string]any{
+					"hosts": []any{host},
+				},
+				"items": items,
 			},
-			Body: payload,
 		})
 	}
 
 	return requests, nil
 }
-
-

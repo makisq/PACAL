@@ -1,39 +1,37 @@
 package module
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"net/http"
-	"octochan/core"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/spf13/viper"
+	"octochan/core"
 )
 
-type IntelItem struct {
-	TableID     string `json:"table_id"`
-	InvsvmCISvm string `json:"invsvm_ci_svm"`
-	TableRowID  string `json:"table_row_id,omitempty"`
+// intelService — служебный сценарий разведки, который собирает сведения
+// о сервере перед основной настройкой.
+const intelService = "psql_tuning_params_se_sys"
+
+// candidateTableIDs перебираются, пока RLM не примет один из них.
+var candidateTableIDs = []string{
+	"pangolinunique",
+	"psqlsecluster",
+	"psqlseclusterstandalone",
+	"postgresql_instances",
 }
 
-type IntelPayload struct {
-	Service string      `json:"service"`
-	StartAt string      `json:"start_at"`
-	Items   []IntelItem `json:"items"`
-}
-
+// DBParam — один настраиваемый параметр СУБД.
 type DBParam struct {
-	Name  string      `json:"name"`
-	Value interface{} `json:"value"`
-	Unit  string      `json:"unit,omitempty"`
+	Name  string `json:"name"`
+	Value any    `json:"value"`
+	Unit  string `json:"unit,omitempty"`
 }
 
+// MainParams — параметры основного запроса настройки.
 type MainParams struct {
 	IpReplics       string    `json:"ip_replics"`
 	DBParams        []DBParam `json:"db_params"`
@@ -47,11 +45,13 @@ type MainParams struct {
 	TaskID          int       `json:"task_id"`
 }
 
+// MainItem — элемент инвентаря основного запроса.
 type MainItem struct {
 	TableID     string `json:"table_id"`
 	InvsvmCISvm string `json:"invsvm_ci_svm"`
 }
 
+// MainPayload — тело основного запроса.
 type MainPayload struct {
 	Datetime string     `json:"datetime"`
 	Items    []MainItem `json:"items"`
@@ -60,584 +60,344 @@ type MainPayload struct {
 	StartAt  string     `json:"start_at"`
 }
 
+// PsqlTuningParamsModule настраивает параметры PostgreSQL.
+//
+// Сначала на каждый CI запускается задача разведки, затем по её результату
+// формируется основной запрос.
 type PsqlTuningParamsModule struct {
-	data          *core.ScenarioData
-	intelTaskMap  map[string]int
-	useTableRowID bool
-	lastStatuses  map[int]string
+	data   *core.ScenarioData
+	params Params
 }
 
-type IntelTaskResult struct {
-	TaskID      int    `json:"id"`
-	Status      string `json:"status"`
-	TableID     string `json:"table_id"`
-	CompletedAt string `json:"completed_at"`
-}
-
+// NewPsqlTuningParamsModule создаёт модуль сервиса psql_tuning_params_se.
 func NewPsqlTuningParamsModule(data *core.ScenarioData) (core.ScenarioModule, error) {
-	return &PsqlTuningParamsModule{
-		data:          data,
-		intelTaskMap:  make(map[string]int),
-		useTableRowID: false,
-		lastStatuses:  make(map[int]string),
-	}, nil
+	return &PsqlTuningParamsModule{data: data, params: Params(data.Parameters)}, nil
 }
 
 func (m *PsqlTuningParamsModule) Validate() error {
 	if len(m.data.Targets) == 0 {
 		return fmt.Errorf("не указаны целевые серверы (targets)")
 	}
-
 	for i, target := range m.data.Targets {
-		if len(target.GetCIs()) == 0 { // ← ИСПРАВЛЕННАЯ ПРОВЕРКА
-			return fmt.Errorf("пустой SVMCI в target #%d", i+1)
+		if len(target.GetCIs()) == 0 {
+			return fmt.Errorf("пустой svm_ci в target #%d", i+1)
 		}
 	}
 
-	requiredParams := []string{"role", "port", "svm_ip", "hugepages"}
-	for _, param := range requiredParams {
-		if val, ok := m.data.Parameters[param]; !ok || val == "" {
-			return fmt.Errorf("отсутствует обязательный параметр: %s", param)
-		}
+	if err := m.params.RequireNonEmpty("role", "port", "svm_ip", "hugepages"); err != nil {
+		return err
 	}
 
-	if tuningParams, ok := m.data.Parameters["parameters"]; ok {
-		if paramList, ok := tuningParams.([]interface{}); ok {
-			for i, p := range paramList {
-				if param, ok := p.(map[string]interface{}); ok {
-					if param["name"] == "" || param["setting"] == "" {
-						return fmt.Errorf("неполный параметр настройки #%d: требуется name и setting", i+1)
-					}
-				} else {
-					return fmt.Errorf("неверный формат параметра настройки #%d", i+1)
-				}
-			}
+	tuning, ok := m.data.Parameters["parameters"]
+	if !ok {
+		return nil
+	}
+
+	list, ok := tuning.([]any)
+	if !ok {
+		return fmt.Errorf("параметр parameters должен быть списком, получено %T", tuning)
+	}
+	for i, raw := range list {
+		param, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("неверный формат параметра настройки #%d: ожидался объект, получено %T", i+1, raw)
+		}
+		if itemString(param, "name") == "" || itemString(param, "setting") == "" {
+			return fmt.Errorf("неполный параметр настройки #%d: требуются name и setting", i+1)
 		}
 	}
 
 	return nil
 }
 
-func (m *PsqlTuningParamsModule) GenerateRequests() ([]*core.APIRequest, error) {
-	var requests []*core.APIRequest
-
-	intelTaskMap, intelTasks, err := m.startIntelForAllTargets()
-	if err != nil {
-		return nil, fmt.Errorf("ошибка запуска разведки: %w", err)
-	}
-
-	log.Printf("✅ Успешно запущено %d задач разведки: %v", len(intelTasks), intelTasks)
-
-	if len(intelTasks) == 0 {
-		return nil, fmt.Errorf("не удалось запустить задачи разведки")
-	}
-
-	log.Printf("⏳ Ожидаем завершения %d задач разведки...", len(intelTasks))
-	results, err := m.MonitorIntelTasks(intelTasks)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка мониторинга задач разведки: %w", err)
-	}
-
-	log.Printf("✅ Все задачи разведки завершены успешно")
-
+// allCIs возвращает плоский список CI в порядке следования целей.
+func (m *PsqlTuningParamsModule) allCIs() []string {
+	var cis []string
 	for _, target := range m.data.Targets {
-		for _, svmCI := range target.GetCIs() {
-			taskID, exists := intelTaskMap[svmCI]
-			if !exists {
-				return nil, fmt.Errorf("не найден taskID для CI %s", svmCI)
-			}
+		cis = append(cis, target.GetCIs()...)
+	}
+	return cis
+}
 
-			intelResult, exists := results[taskID]
-			if !exists {
-				return nil, fmt.Errorf("не найден результат разведки для taskID %d", taskID)
-			}
-
-			req, err := m.tryCreateMainRequest(svmCI, taskID, intelResult.TableID)
-			if err != nil {
-				return nil, fmt.Errorf("ошибка создания основного запроса для CI %s: %w", svmCI, err)
-			}
-			requests = append(requests, req)
+// ipForIndex сопоставляет CI с адресом из ip_replics по сквозной позиции.
+//
+// Прежняя версия индексировала ip_replics позицией CI внутри своей цели,
+// поэтому при нескольких targets адреса разъезжались, а fallback молча
+// подставлял ip_replics[0] — то есть настройка могла уехать не на тот сервер.
+func (m *PsqlTuningParamsModule) ipForIndex(index int) (string, error) {
+	replics := m.params.StringList("ip_replics")
+	if index < len(replics) && replics[index] != "" {
+		return replics[index], nil
+	}
+	if len(replics) == 1 && replics[0] != "" {
+		// Один адрес на один сервер — единственный случай, когда
+		// подстановка однозначна.
+		if len(m.allCIs()) == 1 {
+			return replics[0], nil
 		}
 	}
-	for i, req := range requests {
-		jsonData, _ := json.MarshalIndent(req.Body, "", "  ")
-		log.Printf("🔍 Запрос #%d:\n%s", i+1, string(jsonData))
+	return "", fmt.Errorf("в ip_replics нет адреса для CI #%d: указано %d адресов на %d серверов",
+		index+1, len(replics), len(m.allCIs()))
+}
+
+// intelOutcome — результат разведки по одному CI.
+type intelOutcome struct {
+	ci      string
+	taskID  string
+	tableID string
+	err     error
+}
+
+func (m *PsqlTuningParamsModule) GenerateRequests(ctx context.Context, client *core.APIClient) ([]*core.APIRequest, error) {
+	cis := m.allCIs()
+	if len(cis) == 0 {
+		return nil, fmt.Errorf("нет CI для запуска разведки")
 	}
 
-	log.Printf("✅ Создано %d основных запросов", len(requests))
+	// Адреса проверяем до отправки запросов: иначе разведка уже создана,
+	// а сценарий всё равно падает.
+	for i := range cis {
+		if _, err := m.ipForIndex(i); err != nil {
+			return nil, err
+		}
+	}
+
+	outcomes := m.runIntel(ctx, client, cis)
+
+	// Ошибки собираем все сразу и обязательно сообщаем, какие задачи разведки
+	// уже успели создаться: они остаются выполняться на стороне RLM.
+	var (
+		failed  []string
+		created []string
+	)
+	for _, o := range outcomes {
+		if o.taskID != "" {
+			created = append(created, o.taskID)
+		}
+		if o.err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", o.ci, o.err))
+		}
+	}
+	if len(failed) > 0 {
+		msg := fmt.Sprintf("разведка не удалась для %d из %d CI:\n  %s",
+			len(failed), len(cis), strings.Join(failed, "\n  "))
+		if len(created) > 0 {
+			msg += fmt.Sprintf("\nуже созданы задачи разведки: %s", strings.Join(created, ", "))
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+
+	requests := make([]*core.APIRequest, 0, len(outcomes))
+	for i, o := range outcomes {
+		ip, err := m.ipForIndex(i)
+		if err != nil {
+			return nil, err
+		}
+
+		req, err := m.buildMainRequest(o, ip)
+		if err != nil {
+			return nil, fmt.Errorf("CI %s: %w", o.ci, err)
+		}
+		requests = append(requests, req)
+	}
+
+	log.Printf("psql_tuning_params_se: подготовлено запросов — %d", len(requests))
 	return requests, nil
 }
 
-func (m *PsqlTuningParamsModule) tryCreateMainRequest(svmCI string, taskID int, intelTableID string) (*core.APIRequest, error) {
+// runIntel запускает и дожидается разведки по всем CI.
+//
+// Результаты пишутся в слайс по индексу: прежняя версия писала в общие
+// map и поле структуры из нескольких горутин без синхронизации, что давало
+// "concurrent map writes" уже на двух серверах.
+func (m *PsqlTuningParamsModule) runIntel(ctx context.Context, client *core.APIClient, cis []string) []intelOutcome {
+	outcomes := make([]intelOutcome, len(cis))
 
-	tableIDs := []string{
-		"pangolinunique",
-		"psqlsecluster",
-		"psqlseclusterstandalone",
-		"postgresql_instances",
+	var wg sync.WaitGroup
+	for i, ci := range cis {
+		wg.Add(1)
+		go func(idx int, ci string) {
+			defer wg.Done()
+			outcomes[idx] = m.intelForCI(ctx, client, ci)
+		}(i, ci)
+	}
+	wg.Wait()
+
+	return outcomes
+}
+
+func (m *PsqlTuningParamsModule) intelForCI(ctx context.Context, client *core.APIClient, ci string) intelOutcome {
+	outcome := intelOutcome{ci: ci}
+
+	taskID, tableID, err := m.startIntel(ctx, client, ci)
+	if err != nil {
+		outcome.err = err
+		return outcome
+	}
+	outcome.taskID = taskID
+	outcome.tableID = tableID
+
+	log.Printf("разведка %s: задача %s (table_id=%s)", ci, taskID, tableID)
+
+	status, err := client.WaitForTask(ctx, taskID, core.WaitOptions{
+		PollInterval: 5 * time.Second,
+		Timeout:      m.intelTimeout(),
+		OnStatus: func(s string) {
+			log.Printf("разведка %s (задача %s): статус %s", ci, taskID, s)
+		},
+	})
+	if err != nil {
+		outcome.err = err
+		return outcome
+	}
+
+	// table_id из ответа разведки приоритетнее подобранного при отправке:
+	// раньше он вычислялся, передавался в tryCreateMainRequest и там молча
+	// игнорировался, а основной запрос всегда уходил с "pangolinunique".
+	if discovered, ok := status["table_id"].(string); ok && discovered != "" {
+		outcome.tableID = discovered
+	}
+
+	return outcome
+}
+
+func (m *PsqlTuningParamsModule) intelTimeout() time.Duration {
+	if d := time.Duration(m.params.Int("intel_timeout_seconds", 0)) * time.Second; d > 0 {
+		return d
+	}
+	return 15 * time.Minute
+}
+
+// startIntel подбирает подходящий table_id и создаёт задачу разведки.
+func (m *PsqlTuningParamsModule) startIntel(ctx context.Context, client *core.APIClient, ci string) (taskID, tableID string, err error) {
+	tableIDs := candidateTableIDs
+	if explicit := m.params.String("table_id", ""); explicit != "" {
+		tableIDs = []string{explicit}
 	}
 
 	var lastErr error
-	for _, tableID := range tableIDs {
-		req, err := m.createMainRequest(svmCI, taskID, tableID)
+	for _, candidate := range tableIDs {
+		id, err := m.sendIntel(ctx, client, ci, candidate, false)
 		if err == nil {
-			return req, nil
+			return id, candidate, nil
 		}
-
 		lastErr = err
-		log.Printf("⚠️  Ошибка с table_id '%s' для основного запроса: %v", tableID, err)
 
-		if strings.Contains(err.Error(), "table_id") || strings.Contains(err.Error(), "Указан неверный идентификатор таблицы") {
-			continue
-		}
-
-		return nil, err
-	}
-
-	return nil, fmt.Errorf("не удалось найти working table_id для основного запроса CI %s: %w", svmCI, lastErr)
-}
-
-func (m *PsqlTuningParamsModule) startIntelForAllTargets() (map[string]int, []int, error) {
-	intelTaskMap := make(map[string]int)
-	var intelTasks []int
-
-	totalCIs := 0
-	for _, target := range m.data.Targets {
-		totalCIs += len(target.GetCIs())
-	}
-
-	if totalCIs == 0 {
-		return nil, nil, fmt.Errorf("нет CI для запуска разведки")
-	}
-
-	log.Printf("🔄 Запуск разведки для %d CI", totalCIs)
-
-	errorChan := make(chan error, totalCIs)
-	resultChan := make(chan struct {
-		svmCI  string
-		taskID int
-	}, totalCIs)
-
-	var wg sync.WaitGroup
-	for _, target := range m.data.Targets {
-		for _, svmCI := range target.GetCIs() {
-			wg.Add(1)
-			go func(ci string) {
-				defer wg.Done()
-
-				taskID, err := m.sendIntelRequest(ci)
-				if err != nil {
-					errorChan <- fmt.Errorf("ошибка разведки для CI %s: %w", ci, err)
-					return
-				}
-
-				resultChan <- struct {
-					svmCI  string
-					taskID int
-				}{svmCI: ci, taskID: taskID}
-			}(svmCI)
-		}
-	}
-
-	wg.Wait()
-
-	select {
-	case err := <-errorChan:
-
-		close(errorChan)
-		close(resultChan)
-		return nil, nil, err
-	default:
-	}
-
-	close(errorChan)
-	close(resultChan)
-
-	for result := range resultChan {
-		intelTaskMap[result.svmCI] = result.taskID
-		intelTasks = append(intelTasks, result.taskID)
-	}
-
-	if len(intelTasks) == 0 {
-		return nil, nil, fmt.Errorf("не удалось запустить задачи разведки: нет результатов")
-	}
-
-	return intelTaskMap, intelTasks, nil
-}
-
-func (m *PsqlTuningParamsModule) sendIntelRequest(svmCI string) (int, error) {
-	tableIDs := []string{
-		"pangolinunique",
-		"psqlsecluster",
-		"psqlseclusterstandalone",
-		"postgresql_instances",
-	}
-
-	for _, tableID := range tableIDs {
-		taskID, err := m.trySendIntelRequest(svmCI, tableID, false)
-		if err == nil {
-			return taskID, nil
-		}
-
-		if strings.Contains(err.Error(), "table_id") {
-			log.Printf("⚠️  Обнаружена ошибка table_id '%s', пробуем следующий вариант", tableID)
-			continue
-		}
-
-		if strings.Contains(err.Error(), "table_row_id") {
-			log.Printf("⚠️  Обнаружена ошибка table_row_id, пробуем с table_row_id: \"None\"")
-			taskID, err = m.trySendIntelRequest(svmCI, tableID, true)
-			if err == nil {
-				return taskID, nil
+		// Недостающий table_row_id — отдельный случай: повторяем с заглушкой.
+		if core.IsTableRowIDError(err) {
+			id, retryErr := m.sendIntel(ctx, client, ci, candidate, true)
+			if retryErr == nil {
+				return id, candidate, nil
 			}
+			lastErr = retryErr
 		}
 
-		return 0, err
+		if core.IsTableIDError(lastErr) {
+			log.Printf("разведка %s: table_id %q не подошёл, пробую следующий", ci, candidate)
+			continue
+		}
+
+		// Ошибка не про table_id — перебирать дальше бессмысленно.
+		return "", "", lastErr
 	}
 
-	return 0, fmt.Errorf("не удалось найти working table_id для CI %s", svmCI)
+	// Раньше здесь терялась последняя ошибка и возвращалось общее сообщение.
+	return "", "", fmt.Errorf("не удалось подобрать table_id (перебрано %d вариантов): %w",
+		len(tableIDs), lastErr)
 }
 
-func (m *PsqlTuningParamsModule) trySendIntelRequest(svmCI, tableID string, useTableRowID bool) (int, error) {
-	apiURL := viper.GetString("defaults.api_url")
-	token := viper.GetString("defaults.api_token")
+func (m *PsqlTuningParamsModule) sendIntel(ctx context.Context, client *core.APIClient, ci, tableID string, withRowID bool) (string, error) {
+	item := map[string]any{
+		"table_id":      tableID,
+		"invsvm_ci_svm": ci,
+	}
+	if withRowID {
+		item["table_row_id"] = "None"
+	}
 
-	intelPayload := map[string]interface{}{
-		"service":  "psql_tuning_params_se_sys",
+	payload := map[string]any{
+		"service":  intelService,
 		"start_at": "now",
-		"items": []map[string]interface{}{
-			{
-				"table_id":      tableID,
-				"invsvm_ci_svm": svmCI,
-			},
-		},
+		"items":    []any{item},
 	}
 
-	if useTableRowID {
-		intelPayload["items"].([]map[string]interface{})[0]["table_row_id"] = "None"
-		m.useTableRowID = true
+	var response map[string]any
+	if err := client.Post(ctx, client.TasksURL(), payload, &response); err != nil {
+		return "", err
 	}
-
-	jsonData, err := json.Marshal(intelPayload)
-	if err != nil {
-		return 0, fmt.Errorf("ошибка маршалинга JSON: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return 0, fmt.Errorf("ошибка создания запроса: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Token "+token)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("ошибка HTTP запроса: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := ioutil.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("ошибка API (код %d): %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		ID int `json:"id"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return 0, fmt.Errorf("ошибка парсинга ответа: %w", err)
-	}
-
-	log.Printf("✅ Задача разведки создана для CI %s с table_id %s: %极", svmCI, tableID, result.ID)
-	return result.ID, nil
+	return core.ExtractTaskID(response)
 }
 
-func (m *PsqlTuningParamsModule) createMainRequest(svmCI string, taskID int, tableID string) (*core.APIRequest, error) {
-	url := viper.GetString("defaults.api_url")
-	token := viper.GetString("defaults.api_token")
-
-	ipReplicsStr, ok := m.data.Parameters["ip_replics"].(string)
-	if !ok {
-		return nil, fmt.Errorf("ip_replics должен быть строкой")
+func (m *PsqlTuningParamsModule) buildMainRequest(outcome intelOutcome, ip string) (*core.APIRequest, error) {
+	// RLM ожидает числовой task_id разведки.
+	taskID, err := strconv.Atoi(outcome.taskID)
+	if err != nil {
+		return nil, fmt.Errorf("нечисловой идентификатор задачи разведки %q: %w", outcome.taskID, err)
 	}
 
-	ipReplics := strings.Split(ipReplicsStr, ",")
-	var targetIP string
-	for _, target := range m.data.Targets {
-		for j, ci := range target.GetCIs() {
-			if ci == svmCI && j < len(ipReplics) {
-				targetIP = strings.TrimSpace(ipReplics[j])
-				break
-			}
-		}
-		if targetIP != "" {
-			break
-		}
-	}
-
-	if targetIP == "" {
-		if len(ipReplics) > 0 {
-			targetIP = strings.TrimSpace(ipReplics[0])
-		} else {
-			return nil, fmt.Errorf("не найден IP для CI %s", svmCI)
-		}
-	}
-
-	params := MainParams{
-		IpReplics:       targetIP,
-		DBParams:        m.prepareDBParams(),
-		Port:            m.getIntParam("port", 5432),
-		Restart:         m.getBoolParam("restart", false),
-		Hugepages:       m.getBoolParam("hugepages", false),
-		Role:            m.getStringParam("role", ""),
-		SkipSMConflicts: m.getBoolParam("skip_sm_conflicts", true),
-		SvmCI:           svmCI,
-		SvmIP:           m.getStringParam("svm_ip", ""),
-		TaskID:          taskID,
-	}
-
-	item := MainItem{
-		TableID:     tableID,
-		InvsvmCISvm: svmCI,
-	}
-
-	mainPayload := MainPayload{
-		Datetime: time.Now().Format("2006-01-02T15:04:05-07:00"),
-		Items:    []MainItem{item},
-		Params:   params,
+	payload := MainPayload{
 		Service:  "psql_tuning_params_se",
 		StartAt:  "now",
-	}
-
-	jsonData, _ := json.MarshalIndent(mainPayload, "", "  ")
-	log.Printf("Сформированный запрос для CI %s:\n%s", svmCI, string(jsonData))
-
-	var bodyMap map[string]interface{}
-	jsonBytes, err := json.Marshal(mainPayload)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка маршалинга JSON: %w", err)
-	}
-	if err := json.Unmarshal(jsonBytes, &bodyMap); err != nil {
-		return nil, fmt.Errorf("ошибка преобразования в map: %w", err)
-	}
-
-	return &core.APIRequest{
-		Method: "POST",
-		URL:    url,
-		Headers: map[string]string{
-			"Authorization": "Token " + token,
-			"Content-Type":  "application/json",
-			"Accept":        "application/json",
+		Datetime: time.Now().Format(time.RFC3339),
+		Items: []MainItem{{
+			TableID:     outcome.tableID,
+			InvsvmCISvm: outcome.ci,
+		}},
+		Params: MainParams{
+			IpReplics:       ip,
+			DBParams:        m.dbParams(),
+			Port:            m.params.Int("port", 5432),
+			Restart:         m.params.Bool("restart", false),
+			Hugepages:       m.params.Bool("hugepages", false),
+			Role:            m.params.String("role", ""),
+			SkipSMConflicts: m.params.Bool("skip_sm_conflicts", true),
+			SvmCI:           outcome.ci,
+			SvmIP:           m.params.String("svm_ip", ""),
+			TaskID:          taskID,
 		},
-		Body: bodyMap,
-	}, nil
-}
-
-func (m *PsqlTuningParamsModule) prepareDBParams() []DBParam {
-	var dbParams []DBParam
-
-	if tuningParams, ok := m.data.Parameters["parameters"]; ok {
-		if paramList, ok := tuningParams.([]interface{}); ok {
-			for _, p := range paramList {
-				if param, ok := p.(map[string]interface{}); ok {
-					var value interface{} = getString(param["setting"])
-					if num, err := strconv.Atoi(getString(param["setting"])); err == nil {
-						value = num
-					}
-
-					dbParam := DBParam{
-						Name:  getString(param["name"]),
-						Value: value,
-						Unit:  getString(param["unit"]),
-					}
-					dbParams = append(dbParams, dbParam)
-				}
-			}
-		}
 	}
 
-	return dbParams
-}
-
-func getString(value interface{}) string {
-	if value == nil {
-		return ""
-	}
-	if str, ok := value.(string); ok {
-		return str
-	}
-	return fmt.Sprintf("%v", value)
-}
-
-func (m *PsqlTuningParamsModule) getStringParam(key string, defaultValue string) string {
-	if val, ok := m.data.Parameters[key]; ok {
-		if str, ok := val.(string); ok {
-			return str
-		}
-	}
-	return defaultValue
-}
-
-func (m *PsqlTuningParamsModule) getBoolParam(key string, defaultValue bool) bool {
-	if val, ok := m.data.Parameters[key]; ok {
-		switch v := val.(type) {
-		case bool:
-			return v
-		case string:
-			return strings.ToLower(v) == "true" || v == "1"
-		case int:
-			return v != 0
-		}
-	}
-	return defaultValue
-}
-
-func (m *PsqlTuningParamsModule) getIntParam(key string, defaultValue int) int {
-	if val, ok := m.data.Parameters[key]; ok {
-		switch v := val.(type) {
-		case int:
-			return v
-		case float64:
-			return int(v)
-		case string:
-			if num, err := strconv.Atoi(v); err == nil {
-				return num
-			}
-		}
-	}
-	return defaultValue
-}
-
-func (m *PsqlTuningParamsModule) MonitorIntelTasks(taskIDs []int) (map[int]*IntelTaskResult, error) {
-	results := make(map[int]*IntelTaskResult)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	errorChan := make(chan error, len(taskIDs))
-
-	for _, taskID := range taskIDs {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-
-			result, err := m.waitForIntelTaskCompletion(id)
-			if err != nil {
-				errorChan <- fmt.Errorf("ошибка ожидания задачи %极: %w", id, err)
-				return
-			}
-
-			mu.Lock()
-			results[id] = result
-			mu.Unlock()
-		}(taskID)
-	}
-
-	wg.Wait()
-	close(errorChan)
-
-	for err := range errorChan {
+	body, err := structToMap(payload)
+	if err != nil {
 		return nil, err
 	}
-
-	return results, nil
+	return &core.APIRequest{Method: "POST", Body: body}, nil
 }
 
-func (m *PsqlTuningParamsModule) waitForIntelTaskCompletion(taskID int) (*IntelTaskResult, error) {
-	baseURL := strings.TrimSuffix(viper.GetString("defaults.api_url"), ".json")
-	statusURL := fmt.Sprintf("%s/%d/", baseURL, taskID)
-	token := viper.GetString("defaults.api_token")
+// dbParams переводит блок parameters сценария в список DBParam.
+func (m *PsqlTuningParamsModule) dbParams() []DBParam {
+	raw, ok := m.data.Parameters["parameters"]
+	if !ok {
+		return nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
 
-	timeout := time.After(5 * time.Minute)
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	log.Printf("⏳ Мониторинг задачи разведки %d", taskID)
-
-	for {
-		select {
-		case <-timeout:
-			return nil, fmt.Errorf("превышено время ожидания задачи %d", taskID)
-		case <-ticker.C:
-			status, err := m.getTaskStatus(statusURL, token, taskID)
-			if err != nil {
-				log.Printf("⚠️ Временная ошибка получения статуса задачи %d: %v", taskID, err)
-				continue
-			}
-
-			if m.lastStatuses[taskID] != status.Status {
-				log.Printf("🔄 Статус задачи разведки %d: %s", taskID, status.Status)
-				m.lastStatuses[taskID] = status.Status
-			}
-
-			switch status.Status {
-			case "completed", "success", "finished":
-				log.Printf("✅ Разведка завершена успешно: %d", taskID)
-				return status, nil
-			case "failed", "canceled", "error":
-				return nil, fmt.Errorf("разведочная задача %d завершилась с ошибкой", taskID)
-			case "enqueued", "validating", "in_progress", "running", "performing":
-				continue
-			default:
-				log.Printf("⚠️ Неизвестный статус задачи %d: %s", taskID, status.Status)
-				continue
-			}
+	params := make([]DBParam, 0, len(list))
+	for _, item := range list {
+		param, ok := item.(map[string]any)
+		if !ok {
+			continue
 		}
+
+		setting := itemString(param, "setting")
+
+		// Числовые значения отдаём числами, всё остальное — строками
+		// (например "8GB" или "logical").
+		var value any = setting
+		if n, err := strconv.Atoi(setting); err == nil {
+			value = n
+		} else if f, err := strconv.ParseFloat(setting, 64); err == nil {
+			value = f
+		}
+
+		params = append(params, DBParam{
+			Name:  itemString(param, "name"),
+			Value: value,
+			Unit:  itemString(param, "unit"),
+		})
 	}
-}
-
-func (m *PsqlTuningParamsModule) getTaskStatus(url, token string, taskID int) (*IntelTaskResult, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка создания запроса статуса: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Token "+token)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка запроса статуса: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("разведочная задача не найдена")
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return nil, fmt.Errorf("ошибка API (код %d): %s", resp.StatusCode, string(body))
-	}
-
-	body, _ := ioutil.ReadAll(resp.Body)
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("ошибка парсинга ответа: %w", err)
-	}
-
-	intelResult := &IntelTaskResult{
-		TaskID: taskID,
-	}
-
-	if status, ok := result["status"].(string); ok {
-		intelResult.Status = status
-	} else {
-		return nil, fmt.Errorf("статус не найден в ответе")
-	}
-
-	if tableID, ok := result["table_id"].(string); ok {
-		intelResult.TableID = tableID
-	} else {
-		intelResult.TableID = "psqlseclusterstandalone"
-	}
-
-	if completedAt, ok := result["completed_at"].(string); ok {
-		intelResult.CompletedAt = completedAt
-	}
-
-	return intelResult, nil
+	return params
 }
