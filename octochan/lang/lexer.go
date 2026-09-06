@@ -264,6 +264,9 @@ func (l *Lexer) lexOperator(pos Position) (Token, error) {
 		return simple(TokenComma)
 	case ';':
 		return simple(TokenSemicolon)
+	case ':':
+		// Двоеточие отделяет имя от объявленного типа: x: строка = ...
+		return simple(TokenColon)
 	case '.':
 		// Точка разделяет модуль и алиас: devops.проверить().
 		// Дробные числа сюда не попадают — их разбирает lexNumber.

@@ -30,13 +30,22 @@ func (e *RuntimeError) Error() string {
 }
 
 // scope — окружение с переменными и ссылкой на родителя.
+//
+// Объявленные типы хранятся рядом со значениями: аннотация переменной
+// действует не только в момент объявления, но и при всех последующих
+// присваиваниях — иначе от неё было бы мало толку.
 type scope struct {
 	vars   map[string]Value
+	types  map[string]TypeName
 	parent *scope
 }
 
 func newScope(parent *scope) *scope {
-	return &scope{vars: make(map[string]Value), parent: parent}
+	return &scope{
+		vars:   make(map[string]Value),
+		types:  make(map[string]TypeName),
+		parent: parent,
+	}
 }
 
 func (s *scope) lookup(name string) (Value, bool) {
@@ -46,6 +55,27 @@ func (s *scope) lookup(name string) (Value, bool) {
 		}
 	}
 	return nil, false
+}
+
+// declaredType возвращает объявленный тип переменной, если он есть.
+func (s *scope) declaredType(name string) (TypeName, bool) {
+	for cur := s; cur != nil; cur = cur.parent {
+		if _, ok := cur.vars[name]; ok {
+			t, hasType := cur.types[name]
+			return t, hasType
+		}
+	}
+	return "", false
+}
+
+// define объявляет переменную в текущей области с типом.
+func (s *scope) define(name string, declared TypeName, value Value) {
+	s.vars[name] = value
+	if declared != "" {
+		s.types[name] = declared
+	} else {
+		delete(s.types, name)
+	}
 }
 
 // set присваивает переменную в ближайшей области, где она уже объявлена,
@@ -164,8 +194,7 @@ func (in *Interpreter) execStmt(stmt Stmt, env *scope) error {
 		if err != nil {
 			return err
 		}
-		env.set(s.Name, value)
-		return nil
+		return in.assign(s, env, value)
 
 	case *Block:
 		inner := newScope(env)
@@ -202,6 +231,30 @@ func (in *Interpreter) execStmt(stmt Stmt, env *scope) error {
 	return in.errorf(stmt.Position(), "неизвестная инструкция %T", stmt)
 }
 
+// assign выполняет присваивание с учётом объявленного типа.
+//
+// Написанная аннотация объявляет переменную заново в текущей области.
+// Без аннотации значение кладётся туда, где переменная уже есть, и при
+// этом обязано соответствовать её прежнему объявленному типу.
+func (in *Interpreter) assign(node *Assign, env *scope, value Value) error {
+	if node.Declared != "" {
+		if err := checkType(node.Declared, fmt.Sprintf("переменная %s", node.Name), value); err != nil {
+			return in.wrap(node.Pos, err)
+		}
+		env.define(node.Name, node.Declared, value)
+		return nil
+	}
+
+	if declared, ok := env.declaredType(node.Name); ok {
+		if err := checkType(declared, fmt.Sprintf("переменная %s", node.Name), value); err != nil {
+			return in.wrap(node.Pos, err)
+		}
+	}
+
+	env.set(node.Name, value)
+	return nil
+}
+
 func (in *Interpreter) execIf(node *If, env *scope) error {
 	cond, err := in.eval(node.Cond, env)
 	if err != nil {
@@ -233,10 +286,17 @@ func (in *Interpreter) execFor(node *For, env *scope) error {
 			return in.errorf(node.Pos, "выполнение прервано: %v", err)
 		}
 
+		if node.Declared != "" {
+			if err := checkType(node.Declared,
+				fmt.Sprintf("элемент цикла %s", node.Variable), item); err != nil {
+				return in.wrap(node.Pos, err)
+			}
+		}
+
 		// Тело получает свою область видимости на каждой итерации,
 		// чтобы объявленные внутри переменные не текли между шагами.
 		body := newScope(env)
-		body.vars[node.Variable] = item
+		body.define(node.Variable, node.Declared, item)
 
 		err := in.execStmt(node.Body, body)
 		switch {
@@ -632,7 +692,20 @@ func (in *Interpreter) invoke(decl *AliasDecl, args []Value, pos Position) (Valu
 
 	env := newScope(nil) // алиас не видит переменные вызывающего
 	for i, param := range decl.Params {
-		env.vars[param] = args[i]
+		var declared TypeName
+		if i < len(decl.ParamTypes) {
+			declared = decl.ParamTypes[i]
+		}
+
+		// Проверка на входе — главный смысл аннотаций: ошибка всплывает
+		// на границе алиаса, а не в его середине.
+		if declared != "" {
+			if err := checkType(declared,
+				fmt.Sprintf("параметр %s алиаса %s", param, decl.Name), args[i]); err != nil {
+				return nil, in.wrap(pos, err)
+			}
+		}
+		env.define(param, declared, args[i])
 	}
 
 	for _, stmt := range decl.Body.Stmts {

@@ -47,6 +47,7 @@ const (
 	TokenComma
 	TokenSemicolon
 	TokenDot
+	TokenColon
 	TokenAssign
 	TokenPipe
 	TokenEQ
@@ -92,6 +93,7 @@ var tokenNames = map[TokenKind]string{
 	TokenComma:     ",",
 	TokenSemicolon: ";",
 	TokenDot:       ".",
+	TokenColon:     ":",
 	TokenAssign:    "=",
 	TokenPipe:      "|",
 	TokenEQ:        "==",

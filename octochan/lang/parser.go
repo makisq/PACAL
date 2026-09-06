@@ -116,7 +116,10 @@ func (p *Parser) parseAlias() (*AliasDecl, error) {
 		return nil, err
 	}
 
-	var params []string
+	var (
+		params     []string
+		paramTypes []TypeName
+	)
 	seen := make(map[string]bool)
 	for !p.check(TokenRParen) {
 		paramTok, err := p.expect(TokenIdent, "— имя параметра")
@@ -128,6 +131,12 @@ func (p *Parser) parseAlias() (*AliasDecl, error) {
 		}
 		seen[paramTok.Text] = true
 		params = append(params, paramTok.Text)
+
+		declared, err := p.parseOptionalType()
+		if err != nil {
+			return nil, err
+		}
+		paramTypes = append(paramTypes, declared)
 
 		if !p.match(TokenComma) {
 			break
@@ -144,12 +153,32 @@ func (p *Parser) parseAlias() (*AliasDecl, error) {
 	}
 
 	return &AliasDecl{
-		Pos:    aliasTok.Pos,
-		Name:   nameTok.Text,
-		Params: params,
-		Body:   body,
-		Doc:    p.docComment(aliasTok.Pos.Line),
+		Pos:        aliasTok.Pos,
+		Name:       nameTok.Text,
+		Params:     params,
+		ParamTypes: paramTypes,
+		Body:       body,
+		Doc:        p.docComment(aliasTok.Pos.Line),
 	}, nil
+}
+
+// parseOptionalType разбирает необязательную аннотацию `: тип`.
+// Отсутствие аннотации — не ошибка: типы добровольные.
+func (p *Parser) parseOptionalType() (TypeName, error) {
+	if !p.match(TokenColon) {
+		return "", nil
+	}
+
+	typeTok, err := p.expect(TokenIdent, "— имя типа после двоеточия")
+	if err != nil {
+		return "", err
+	}
+
+	declared, err := ParseTypeName(typeTok.Text)
+	if err != nil {
+		return "", p.errorf(typeTok.Pos, "%v", err)
+	}
+	return declared, nil
 }
 
 func (p *Parser) parseBlock() (*Block, error) {
@@ -200,17 +229,31 @@ func (p *Parser) parseStatement() (Stmt, error) {
 		return nil, p.errorf(p.peek().Pos, "алиас можно объявлять только на верхнем уровне файла")
 	}
 
-	// Присваивание: идентификатор, за которым идёт '='.
+	// Присваивание: идентификатор, за которым идёт '=' или ': тип ='.
 	// Обычное '==' сюда не попадает, потому что это отдельный токен.
-	if p.check(TokenIdent) && p.tokens[p.pos+1].Kind == TokenAssign {
+	next := p.tokens[p.pos+1].Kind
+	if p.check(TokenIdent) && (next == TokenAssign || next == TokenColon) {
 		nameTok := p.advance()
-		p.advance() // =
+
+		declared, err := p.parseOptionalType()
+		if err != nil {
+			return nil, err
+		}
+
+		if _, err := p.expect(TokenAssign, "после имени переменной"); err != nil {
+			return nil, err
+		}
 
 		value, err := p.parseExpr()
 		if err != nil {
 			return nil, err
 		}
-		return &Assign{Pos: nameTok.Pos, Name: nameTok.Text, Value: value}, p.endStatement()
+		return &Assign{
+			Pos:      nameTok.Pos,
+			Name:     nameTok.Text,
+			Declared: declared,
+			Value:    value,
+		}, p.endStatement()
 	}
 
 	pos := p.peek().Pos
@@ -282,6 +325,12 @@ func (p *Parser) parseFor() (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	declared, err := p.parseOptionalType()
+	if err != nil {
+		return nil, err
+	}
+
 	if _, err := p.expect(TokenIn, "после переменной цикла"); err != nil {
 		return nil, err
 	}
@@ -296,7 +345,13 @@ func (p *Parser) parseFor() (Stmt, error) {
 		return nil, err
 	}
 
-	return &For{Pos: forTok.Pos, Variable: varTok.Text, Iterable: iterable, Body: body}, nil
+	return &For{
+		Pos:      forTok.Pos,
+		Variable: varTok.Text,
+		Declared: declared,
+		Iterable: iterable,
+		Body:     body,
+	}, nil
 }
 
 func (p *Parser) parseReturn() (Stmt, error) {

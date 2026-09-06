@@ -107,11 +107,13 @@ type ExprStmt struct {
 	Expr Expr
 }
 
-// Assign — присваивание переменной.
+// Assign — присваивание переменной с необязательной аннотацией типа.
+// Declared непусто, если написано `имя: тип = значение`.
 type Assign struct {
-	Pos   Position
-	Name  string
-	Value Expr
+	Pos      Position
+	Name     string
+	Declared TypeName
+	Value    Expr
 }
 
 // Block — последовательность инструкций в фигурных скобках.
@@ -133,6 +135,7 @@ type If struct {
 type For struct {
 	Pos      Position
 	Variable string
+	Declared TypeName // необязательный тип элемента
 	Iterable Expr
 	Body     *Block
 }
@@ -176,7 +179,10 @@ type AliasDecl struct {
 	Pos    Position
 	Name   string
 	Params []string
-	Body   *Block
+	// ParamTypes соответствует Params по индексу; пустое значение
+	// означает отсутствие аннотации.
+	ParamTypes []TypeName
+	Body       *Block
 	// Module — пакет, из которого пришёл алиас. Пустая строка означает
 	// алиасы самого пользователя.
 	Module string

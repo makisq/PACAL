@@ -231,6 +231,89 @@ func TestDiffBuiltin(t *testing.T) {
 	}
 }
 
+func TestTypeAnnotationsAreOptional(t *testing.T) {
+	// Без аннотаций всё работает как раньше — это условие «необязательности».
+	src := `
+без_типа = 5
+с_типом: целое = 7
+латиницей: string = "ок"
+print(без_типа + с_типом, латиницей)
+`
+	if got := strings.TrimSpace(mustRun(t, src)); got != "12 ок" {
+		t.Errorf("получено %q", got)
+	}
+}
+
+func TestTypeMismatchOnDeclaration(t *testing.T) {
+	// Строка не считается числом намеренно: иначе аннотация не ловила бы
+	// ровно ту ошибку, ради которой её пишут.
+	_, err := run(t, `порт: целое = "5432"`)
+	if err == nil {
+		t.Fatal("строка присвоена переменной типа целое без ошибки")
+	}
+	if !strings.Contains(err.Error(), "целое") {
+		t.Errorf("непонятное сообщение: %v", err)
+	}
+}
+
+func TestDeclaredTypeSurvivesReassignment(t *testing.T) {
+	// Аннотация действует не только в момент объявления.
+	_, err := run(t, `
+счётчик: целое = 0
+счётчик = "уже не число"
+`)
+	if err == nil {
+		t.Fatal("повторное присваивание обошло объявленный тип")
+	}
+}
+
+func TestIntWidensToNumber(t *testing.T) {
+	// Целое там, где объявлено число или дробное, — расширение без потерь.
+	if _, err := run(t, `x: число = 5`); err != nil {
+		t.Errorf("целое не принято как число: %v", err)
+	}
+	if _, err := run(t, `y: дробное = 5`); err != nil {
+		t.Errorf("целое не принято как дробное: %v", err)
+	}
+	if _, err := run(t, `z: целое = 5.5`); err == nil {
+		t.Error("дробное принято как целое")
+	}
+}
+
+func TestParamTypeCheckedAtCall(t *testing.T) {
+	src := `
+alias повторить(текст: строка, раз: целое) {
+    return раз
+}
+повторить(42, 2)
+`
+	_, err := run(t, src)
+	if err == nil {
+		t.Fatal("число передано в параметр типа строка без ошибки")
+	}
+	for _, want := range []string{"повторить", "текст", "строка"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("в сообщении нет %q: %v", want, err)
+		}
+	}
+}
+
+func TestTypedLoopVariable(t *testing.T) {
+	if _, err := run(t, `for n: целое in [1, 2, 3] { print(n) }`); err != nil {
+		t.Errorf("корректный цикл не прошёл: %v", err)
+	}
+	if _, err := run(t, `for n: целое in [1, "два"] { print(n) }`); err == nil {
+		t.Error("строка в цикле с типом целое прошла без ошибки")
+	}
+}
+
+func TestUnknownTypeName(t *testing.T) {
+	_, err := run(t, `x: непонятно = 1`)
+	if err == nil || !strings.Contains(err.Error(), "неизвестный тип") {
+		t.Fatalf("ожидалась ошибка о неизвестном типе, получено: %v", err)
+	}
+}
+
 func TestNamespaces(t *testing.T) {
 	registry := NewRegistry()
 
