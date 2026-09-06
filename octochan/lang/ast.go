@@ -46,6 +46,21 @@ type ListLit struct {
 	Elements []Expr
 }
 
+// MapEntry — пара «ключ: значение» в литерале словаря.
+type MapEntry struct {
+	Key   Expr
+	Value Expr
+}
+
+// MapLit — литерал словаря: {"srv1": "10.0.0.1"}.
+//
+// Фигурные скобки заняты блоками, поэтому литерал распознаётся только там,
+// где ожидается выражение. В начале инструкции { по-прежнему открывает блок.
+type MapLit struct {
+	Pos     Position
+	Entries []MapEntry
+}
+
 // Unary — унарный оператор: not x, -x.
 type Unary struct {
 	Pos     Position
@@ -78,6 +93,7 @@ type Index struct {
 func (e *Literal) Position() Position { return e.Pos }
 func (e *Ident) Position() Position   { return e.Pos }
 func (e *ListLit) Position() Position { return e.Pos }
+func (e *MapLit) Position() Position  { return e.Pos }
 func (e *Unary) Position() Position   { return e.Pos }
 func (e *Binary) Position() Position  { return e.Pos }
 func (e *Call) Position() Position    { return e.Pos }
@@ -86,6 +102,7 @@ func (e *Index) Position() Position   { return e.Pos }
 func (*Literal) exprNode() {}
 func (*Ident) exprNode()   {}
 func (*ListLit) exprNode() {}
+func (*MapLit) exprNode()  {}
 func (*Unary) exprNode()   {}
 func (*Binary) exprNode()  {}
 func (*Call) exprNode()    {}

@@ -317,6 +317,21 @@ func (in *Interpreter) iterate(pos Position, v Value) ([]Value, error) {
 	switch val := v.(type) {
 	case ListValue:
 		return val, nil
+	case MapValue:
+		// По словарю ходим ключами: значение достаётся как карта[ключ].
+		keys := val.SortedKeys()
+		items := make([]Value, len(keys))
+		for i, key := range keys {
+			items[i] = StringValue(key)
+		}
+		return items, nil
+	case ConfigValue:
+		keys := val.SortedKeys()
+		items := make([]Value, len(keys))
+		for i, key := range keys {
+			items[i] = StringValue(key)
+		}
+		return items, nil
 	case StringValue:
 		// Строку обходим построчно: так удобно работать с выводом
 		// текстовых операций через конвейер.
@@ -359,6 +374,21 @@ func (in *Interpreter) eval(expr Expr, env *scope) (Value, error) {
 			items = append(items, value)
 		}
 		return items, nil
+
+	case *MapLit:
+		entries := make(MapValue, len(e.Entries))
+		for _, entry := range e.Entries {
+			key, err := in.eval(entry.Key, env)
+			if err != nil {
+				return nil, err
+			}
+			value, err := in.eval(entry.Value, env)
+			if err != nil {
+				return nil, err
+			}
+			entries[key.Text()] = value
+		}
+		return entries, nil
 
 	case *Unary:
 		return in.evalUnary(e, env)
@@ -617,6 +647,25 @@ func (in *Interpreter) evalIndex(e *Index, env *scope) (Value, error) {
 		return nil, err
 	}
 
+	// Словарь и конфиг индексируются строковым ключом.
+	switch container := target.(type) {
+	case MapValue:
+		key := indexValue.Text()
+		value, ok := container[key]
+		if !ok {
+			return nil, in.errorf(e.Pos, "в словаре нет ключа %q; есть: %s",
+				key, strings.Join(container.SortedKeys(), ", "))
+		}
+		return value, nil
+
+	case ConfigValue:
+		value, err := container.Lookup(indexValue.Text())
+		if err != nil {
+			return nil, in.wrap(e.Pos, err)
+		}
+		return StringValue(value), nil
+	}
+
 	n, ok := numeric(indexValue)
 	if !ok {
 		return nil, in.errorf(e.Pos, "индекс должен быть числом, получено %s", indexValue.TypeName())
@@ -624,7 +673,7 @@ func (in *Interpreter) evalIndex(e *Index, env *scope) (Value, error) {
 
 	list, ok := target.(ListValue)
 	if !ok {
-		return nil, in.errorf(e.Pos, "индексировать можно только список, получено %s", target.TypeName())
+		return nil, in.errorf(e.Pos, "индексировать можно список, словарь или конфиг, получено %s", target.TypeName())
 	}
 
 	index := int(n)

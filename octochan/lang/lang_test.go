@@ -314,6 +314,207 @@ func TestUnknownTypeName(t *testing.T) {
 	}
 }
 
+// writeConf создаёт временный конфиг и возвращает путь с прямыми слэшами,
+// пригодный для вставки в исходник сценария.
+func writeConf(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.ToSlash(path)
+}
+
+func TestMapLiteralAndIndex(t *testing.T) {
+	src := `
+адреса = {"srv1": "10.0.0.1", "srv2": "10.0.0.2"}
+print(адреса["srv2"], len(адреса))
+`
+	if got := strings.TrimSpace(mustRun(t, src)); got != "10.0.0.2 2" {
+		t.Errorf("получено %q", got)
+	}
+}
+
+func TestMapLiteralIsNotConfusedWithBlock(t *testing.T) {
+	// Фигурные скобки заняты блоками; литерал распознаётся там,
+	// где ожидается выражение.
+	src := `
+карта = {"a": 1}
+if карта["a"] == 1 {
+    print("ок")
+}
+for ключ in {"x": 1, "y": 2} {
+    print(ключ)
+}
+`
+	if got := strings.TrimSpace(mustRun(t, src)); got != "ок\nx\ny" {
+		t.Errorf("получено %q", got)
+	}
+}
+
+func TestMapIterationIsStable(t *testing.T) {
+	// Обход map в Go случаен; сценарий обязан печатать одно и то же.
+	src := `for k in {"в": 1, "а": 2, "б": 3} { print(k) }`
+	first := mustRun(t, src)
+	for i := 0; i < 20; i++ {
+		if got := mustRun(t, src); got != first {
+			t.Fatalf("порядок обхода нестабилен: %q против %q", got, first)
+		}
+	}
+}
+
+func TestMapHelpers(t *testing.T) {
+	src := `
+м = map("a", 1, "b", 2)
+print(keys(м), values(м))
+print(has(м, "a"), has(м, "нет"))
+print(get(м, "нет", "по умолчанию"))
+put(м, "c", 3)
+print(len(м))
+print(merge({"a": 1}, {"a": 9, "b": 2}))
+`
+	got := strings.TrimSpace(mustRun(t, src))
+	want := strings.Join([]string{
+		`[a, b] [1, 2]`,
+		`true false`,
+		`по умолчанию`,
+		`3`,
+		`{"a": 9, "b": 2}`,
+	}, "\n")
+	if got != want {
+		t.Errorf("получено:\n%s\nожидалось:\n%s", got, want)
+	}
+}
+
+func TestConfigValueIsParsedOnce(t *testing.T) {
+	path := writeConf(t, "prod.conf", "shared_buffers = 8GB\nmax_connections = 100\n")
+
+	src := `
+цель = config("` + path + `")
+print(цель["max_connections"], цель["shared_buffers"], len(цель))
+`
+	if got := strings.TrimSpace(mustRun(t, src)); got != "100 8GB 2" {
+		t.Errorf("получено %q", got)
+	}
+}
+
+func TestConfigStillWorksAfterFileIsGone(t *testing.T) {
+	// Разобранный конфиг живёт в переменной и не привязан к файлу:
+	// это и есть доказательство, что повторного чтения не происходит.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prod.conf")
+	if err := os.WriteFile(path, []byte("max_connections = 100\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := Parse("<тест>", `цель = config("`+filepath.ToSlash(path)+`")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	interp := NewInterpreter(context.Background(), NewRegistry(), &out)
+	if err := interp.RunFile(file); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	// Повторный разбор здесь упал бы: файла больше нет.
+	cfg, err := configOf(StringValue("нет-такого-файла"))
+	if err == nil {
+		t.Fatalf("несуществующий путь разобрался: %+v", cfg)
+	}
+}
+
+func TestConfigDiffAcceptsParsedValues(t *testing.T) {
+	left := writeConf(t, "a.conf", "shared_buffers = 8GB\nmax_connections = 100\n")
+	right := writeConf(t, "b.conf", "shared_buffers = 8192MB\nmax_connections = 200\n")
+
+	src := `
+эталон = config("` + left + `")
+цель = config("` + right + `")
+print(diff(эталон, цель), diff_list(эталон, цель))
+`
+	if got := strings.TrimSpace(mustRun(t, src)); got != "1 [max_connections]" {
+		t.Errorf("получено %q", got)
+	}
+}
+
+func TestConfigSections(t *testing.T) {
+	path := writeConf(t, "s.conf", "[server]\nport = 5432\n[client]\nport = 6432\ntimeout = 30\n")
+
+	src := `
+c = config("` + path + `")
+print(c["server.port"], c["timeout"])
+`
+	if got := strings.TrimSpace(mustRun(t, src)); got != "5432 30" {
+		t.Errorf("получено %q", got)
+	}
+
+	// Короткое имя, встречающееся в двух секциях, не должно разрешаться молча.
+	_, err := run(t, `print(config("`+path+`")["port"])`)
+	if err == nil || !strings.Contains(err.Error(), "уточните") {
+		t.Errorf("неоднозначный параметр разрешился без ошибки: %v", err)
+	}
+}
+
+func TestConfigPutAndSave(t *testing.T) {
+	dir := t.TempDir()
+	src := writeConf(t, "in.conf", "max_connections = 100\n")
+	out := filepath.ToSlash(filepath.Join(dir, "out.conf"))
+
+	script := `
+c = config("` + src + `")
+put(c, "max_connections", "200")
+put(c, "server.port", "5433")
+save(c, "` + out + `")
+print(c["max_connections"], c["server.port"])
+`
+	if got := strings.TrimSpace(mustRun(t, script)); got != "200 5433" {
+		t.Errorf("получено %q", got)
+	}
+
+	// Записанный файл должен читаться обратно тем же парсером.
+	reread := `print(config("` + out + `")["server.port"])`
+	if got := strings.TrimSpace(mustRun(t, reread)); got != "5433" {
+		t.Errorf("после записи и чтения получено %q", got)
+	}
+}
+
+func TestConfigAndMapTypeAnnotations(t *testing.T) {
+	path := writeConf(t, "t.conf", "max_connections = 100\n")
+
+	src := `
+цель: конфиг = config("` + path + `")
+адреса: словарь = {"srv1": "10.0.0.1"}
+print(цель["max_connections"], адреса["srv1"])
+`
+	if got := strings.TrimSpace(mustRun(t, src)); got != "100 10.0.0.1" {
+		t.Errorf("получено %q", got)
+	}
+
+	if _, err := run(t, `x: конфиг = "просто строка"`); err == nil {
+		t.Error("строка присвоена переменной типа конфиг")
+	}
+	if _, err := run(t, `y: словарь = [1, 2]`); err == nil {
+		t.Error("список присвоен переменной типа словарь")
+	}
+}
+
+func TestMissingKeyErrorsList(t *testing.T) {
+	// Сообщение должно подсказывать, какие ключи есть.
+	_, err := run(t, `print({"a": 1, "b": 2}["в"])`)
+	if err == nil {
+		t.Fatal("ожидалась ошибка об отсутствующем ключе")
+	}
+	if !strings.Contains(err.Error(), "a, b") {
+		t.Errorf("нет списка ключей: %v", err)
+	}
+}
+
 func TestNamespaces(t *testing.T) {
 	registry := NewRegistry()
 

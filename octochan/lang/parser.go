@@ -273,6 +273,12 @@ func (p *Parser) endStatement() error {
 		return nil
 	case TokenRBrace, TokenEOF:
 		return nil
+	case TokenColon:
+		// Скорее всего, это литерал словаря в начале инструкции: там
+		// фигурная скобка означает блок, и разбор уходит не туда.
+		return p.errorf(p.peek().Pos,
+			"неожиданное двоеточие; если это словарь, присвойте его переменной "+
+				"или оберните в скобки: x = {\"ключ\": значение}")
 	default:
 		return p.errorf(p.peek().Pos, "лишнее выражение после инструкции: %s", p.peek())
 	}
@@ -631,6 +637,9 @@ func (p *Parser) parsePrimary() (Expr, error) {
 
 	case TokenLBracket:
 		return p.parseList()
+
+	case TokenLBrace:
+		return p.parseMap()
 	}
 
 	return nil, p.errorf(tok.Pos, "неожиданный %s в выражении", tok)
@@ -650,6 +659,47 @@ func (p *Parser) parseIdent() (Expr, error) {
 	}
 
 	return &Ident{Pos: nameTok.Pos, Name: nameTok.Text}, nil
+}
+
+// parseMap разбирает литерал словаря {ключ: значение, ...}.
+//
+// Вызывается только из parsePrimary, то есть там, где ожидается выражение.
+// В начале инструкции { остаётся началом блока — иначе `if x { ... }`
+// пришлось бы разбирать с оглядкой назад.
+func (p *Parser) parseMap() (Expr, error) {
+	openTok := p.advance() // {
+
+	node := &MapLit{Pos: openTok.Pos}
+	for {
+		p.skipNewlines()
+		if p.check(TokenRBrace) {
+			break
+		}
+
+		key, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokenColon, "между ключом и значением словаря"); err != nil {
+			return nil, err
+		}
+		value, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		node.Entries = append(node.Entries, MapEntry{Key: key, Value: value})
+
+		p.skipNewlines()
+		if !p.match(TokenComma) {
+			break
+		}
+	}
+
+	p.skipNewlines()
+	if _, err := p.expect(TokenRBrace, "— закрывающая скобка словаря"); err != nil {
+		return nil, err
+	}
+	return node, nil
 }
 
 func (p *Parser) parseList() (Expr, error) {

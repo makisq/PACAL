@@ -22,6 +22,8 @@ const (
 	TypeString TypeName = "string"
 	TypeBool   TypeName = "bool"
 	TypeList   TypeName = "list"
+	TypeMap    TypeName = "map"
+	TypeConfig TypeName = "config"
 )
 
 // typeAliases позволяет писать имена типов и латиницей, и по-русски:
@@ -42,6 +44,11 @@ var typeAliases = map[string]TypeName{
 	"логическое": TypeBool,
 	"list":       TypeList,
 	"список":     TypeList,
+	"map":        TypeMap,
+	"dict":       TypeMap,
+	"словарь":    TypeMap,
+	"config":     TypeConfig,
+	"конфиг":     TypeConfig,
 }
 
 // ParseTypeName распознаёт имя типа.
@@ -83,6 +90,10 @@ func (t TypeName) Russian() string {
 		return "логическое"
 	case TypeList:
 		return "список"
+	case TypeMap:
+		return "словарь"
+	case TypeConfig:
+		return "конфиг"
 	default:
 		return string(t)
 	}
@@ -123,6 +134,12 @@ func (t TypeName) Accepts(v Value) bool {
 	case TypeList:
 		_, ok := v.(ListValue)
 		return ok
+	case TypeMap:
+		_, ok := v.(MapValue)
+		return ok
+	case TypeConfig:
+		_, ok := v.(ConfigValue)
+		return ok
 	}
 	return false
 }
@@ -132,6 +149,8 @@ func checkType(declared TypeName, what string, v Value) error {
 	if declared.Accepts(v) {
 		return nil
 	}
-	return fmt.Errorf("%s объявлен как %s, а получено значение типа %s (%s)",
+	// Формулировка нейтральна по роду: what бывает и переменной,
+	// и параметром, и элементом цикла.
+	return fmt.Errorf("%s: объявлен тип %s, получено значение типа %s (%s)",
 		what, declared.Russian(), v.TypeName(), Display(v))
 }

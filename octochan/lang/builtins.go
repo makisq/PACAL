@@ -139,6 +139,51 @@ func DefaultBuiltins() map[string]Builtin {
 			Doc: "каноническая форма значения конфига: normalize(\"8GB\") == normalize(\"8192MB\")",
 			Fn:  builtinNormalize,
 		},
+		{
+			Name: "config", MinArgs: 1, MaxArgs: 1,
+			Doc: "разобрать конфиг один раз и держать в переменной",
+			Fn:  builtinConfig,
+		},
+		{
+			Name: "map", MinArgs: 0, MaxArgs: -1,
+			Doc: "собрать словарь из пар ключ, значение",
+			Fn:  builtinMap,
+		},
+		{
+			Name: "keys", MinArgs: 1, MaxArgs: 1,
+			Doc: "ключи словаря или имена параметров конфига",
+			Fn:  builtinKeys,
+		},
+		{
+			Name: "values", MinArgs: 1, MaxArgs: 1,
+			Doc: "значения словаря или конфига",
+			Fn:  builtinValues,
+		},
+		{
+			Name: "has", MinArgs: 2, MaxArgs: 2,
+			Doc: "есть ли ключ в словаре или параметр в конфиге",
+			Fn:  builtinHas,
+		},
+		{
+			Name: "get", MinArgs: 2, MaxArgs: 3,
+			Doc: "значение по ключу либо значение по умолчанию",
+			Fn:  builtinGet,
+		},
+		{
+			Name: "put", MinArgs: 3, MaxArgs: 3,
+			Doc: "записать значение по ключу и вернуть контейнер",
+			Fn:  builtinPut,
+		},
+		{
+			Name: "merge", MinArgs: 2, MaxArgs: 2,
+			Doc: "объединить два словаря или конфига; правый перекрывает левый",
+			Fn:  builtinMerge,
+		},
+		{
+			Name: "save", MinArgs: 2, MaxArgs: 2,
+			Doc: "записать конфиг в файл",
+			Fn:  builtinSave,
+		},
 	}
 
 	builtins := make(map[string]Builtin, len(list))
@@ -152,19 +197,26 @@ func DefaultBuiltins() map[string]Builtin {
 // Работа с конфигами
 // ---------------------------------------------------------------------------
 
-// configOf принимает либо путь к файлу, либо готовый текст конфига.
-// Это то, что делает конвейер осмысленным: read(f) | ... отдаёт текст.
-func configOf(v Value) (core.ConfigMap, string, error) {
-	text, name, err := textOf(v)
-	if err != nil {
-		return nil, "", err
+// configOf принимает уже разобранный конфиг, путь к файлу или текст.
+//
+// Готовый ConfigValue проходит без повторного разбора — ради этого он
+// и заведён: сценарий из трёх обращений к одному файлу раньше парсил его
+// трижды.
+func configOf(v Value) (ConfigValue, error) {
+	if cfg, ok := v.(ConfigValue); ok {
+		return cfg, nil
 	}
 
-	cfg, err := core.ParseConfig(text)
+	text, name, err := textOf(v)
 	if err != nil {
-		return nil, "", fmt.Errorf("%s: %w", name, err)
+		return ConfigValue{}, err
 	}
-	return cfg, name, nil
+
+	data, err := core.ParseConfig(text)
+	if err != nil {
+		return ConfigValue{}, fmt.Errorf("%s: %w", name, err)
+	}
+	return ConfigValue{Name: name, Data: data}, nil
 }
 
 // textOf возвращает текст и человекочитаемое имя источника.
@@ -188,30 +240,25 @@ func textOf(v Value) (string, string, error) {
 	return string(data), path, nil
 }
 
-func builtinDiff(_ *Interpreter, args []Value) (Value, error) {
-	left, leftName, err := configOf(args[0])
-	if err != nil {
-		return nil, err
-	}
-	right, rightName, err := configOf(args[1])
-	if err != nil {
-		return nil, err
-	}
+func builtinConfig(_ *Interpreter, args []Value) (Value, error) {
+	return configOf(args[0])
+}
 
-	return IntValue(core.CompareConfigs(left, right, leftName, rightName).Len()), nil
+func builtinDiff(_ *Interpreter, args []Value) (Value, error) {
+	left, right, err := twoConfigs(args)
+	if err != nil {
+		return nil, err
+	}
+	return IntValue(core.CompareConfigs(left.Data, right.Data, left.Name, right.Name).Len()), nil
 }
 
 func builtinDiffList(_ *Interpreter, args []Value) (Value, error) {
-	left, leftName, err := configOf(args[0])
-	if err != nil {
-		return nil, err
-	}
-	right, rightName, err := configOf(args[1])
+	left, right, err := twoConfigs(args)
 	if err != nil {
 		return nil, err
 	}
 
-	diff := core.CompareConfigs(left, right, leftName, rightName)
+	diff := core.CompareConfigs(left.Data, right.Data, left.Name, right.Name)
 	names := make(ListValue, 0, diff.Len())
 	for _, entry := range diff.Entries {
 		names = append(names, StringValue(entry.Param()))
@@ -219,66 +266,249 @@ func builtinDiffList(_ *Interpreter, args []Value) (Value, error) {
 	return names, nil
 }
 
+func twoConfigs(args []Value) (ConfigValue, ConfigValue, error) {
+	left, err := configOf(args[0])
+	if err != nil {
+		return ConfigValue{}, ConfigValue{}, err
+	}
+	right, err := configOf(args[1])
+	if err != nil {
+		return ConfigValue{}, ConfigValue{}, err
+	}
+	return left, right, nil
+}
+
 func builtinParam(_ *Interpreter, args []Value) (Value, error) {
-	cfg, name, err := configOf(args[0])
+	cfg, err := configOf(args[0])
 	if err != nil {
 		return nil, err
 	}
 
-	var section, key string
+	name := args[1].Text()
 	if len(args) == 3 {
-		section, key = args[1].Text(), args[2].Text()
-	} else {
-		key = args[1].Text()
+		name = args[1].Text() + "." + args[2].Text()
 	}
 
-	value, ok := cfg[section][key]
-	if !ok {
-		where := "без секции"
-		if section != "" {
-			where = "секции " + section
-		}
-		return nil, fmt.Errorf("параметр %q не найден в %s (%s)", key, where, name)
+	value, err := cfg.Lookup(name)
+	if err != nil {
+		return nil, err
 	}
 	return StringValue(value), nil
 }
 
 func builtinParams(_ *Interpreter, args []Value) (Value, error) {
-	cfg, _, err := configOf(args[0])
+	cfg, err := configOf(args[0])
 	if err != nil {
 		return nil, err
 	}
-
-	total := 0
-	for _, section := range cfg {
-		total += len(section)
-	}
-	return IntValue(total), nil
+	return IntValue(cfg.Params()), nil
 }
 
 func builtinValidate(_ *Interpreter, args []Value) (Value, error) {
-	source := Value(StringValue("-"))
-	if len(args) == 1 {
-		source = args[0]
-	}
-
-	cfg, name, err := configOf(source)
+	cfg, err := configOf(args[0])
 	if err != nil {
 		return nil, err
 	}
-
-	total := 0
-	for _, section := range cfg {
-		total += len(section)
+	if cfg.Params() == 0 {
+		return nil, fmt.Errorf("%s: не найдено ни одного параметра", cfg.Name)
 	}
-	if total == 0 {
-		return nil, fmt.Errorf("%s: не найдено ни одного параметра", name)
-	}
-	return IntValue(total), nil
+	return IntValue(cfg.Params()), nil
 }
 
 func builtinNormalize(_ *Interpreter, args []Value) (Value, error) {
 	return StringValue(core.NormalizeValue(args[0].Text())), nil
+}
+
+// ---------------------------------------------------------------------------
+// Словари и конфиги
+// ---------------------------------------------------------------------------
+
+func builtinMap(_ *Interpreter, args []Value) (Value, error) {
+	if len(args)%2 != 0 {
+		return nil, fmt.Errorf("map ожидает пары ключ, значение — получено нечётное число аргументов (%d)", len(args))
+	}
+
+	entries := make(MapValue, len(args)/2)
+	for i := 0; i < len(args); i += 2 {
+		entries[args[i].Text()] = args[i+1]
+	}
+	return entries, nil
+}
+
+func builtinKeys(_ *Interpreter, args []Value) (Value, error) {
+	switch container := args[0].(type) {
+	case MapValue:
+		return stringList(container.SortedKeys()), nil
+	case ConfigValue:
+		return stringList(container.SortedKeys()), nil
+	default:
+		return nil, fmt.Errorf("keys применим к словарю или конфигу, получено %s", args[0].TypeName())
+	}
+}
+
+func builtinValues(_ *Interpreter, args []Value) (Value, error) {
+	switch container := args[0].(type) {
+	case MapValue:
+		keys := container.SortedKeys()
+		values := make(ListValue, len(keys))
+		for i, key := range keys {
+			values[i] = container[key]
+		}
+		return values, nil
+
+	case ConfigValue:
+		keys := container.SortedKeys()
+		values := make(ListValue, 0, len(keys))
+		for _, key := range keys {
+			value, err := container.Lookup(key)
+			if err != nil {
+				return nil, err
+			}
+			values = append(values, StringValue(value))
+		}
+		return values, nil
+
+	default:
+		return nil, fmt.Errorf("values применим к словарю или конфигу, получено %s", args[0].TypeName())
+	}
+}
+
+func builtinHas(_ *Interpreter, args []Value) (Value, error) {
+	key := args[1].Text()
+
+	switch container := args[0].(type) {
+	case MapValue:
+		_, ok := container[key]
+		return BoolValue(ok), nil
+	case ConfigValue:
+		_, err := container.Lookup(key)
+		return BoolValue(err == nil), nil
+	default:
+		return nil, fmt.Errorf("has применим к словарю или конфигу, получено %s", args[0].TypeName())
+	}
+}
+
+func builtinGet(_ *Interpreter, args []Value) (Value, error) {
+	var fallback Value = NullValue{}
+	if len(args) == 3 {
+		fallback = args[2]
+	}
+
+	key := args[1].Text()
+
+	switch container := args[0].(type) {
+	case MapValue:
+		if value, ok := container[key]; ok {
+			return value, nil
+		}
+		return fallback, nil
+
+	case ConfigValue:
+		if value, err := container.Lookup(key); err == nil {
+			return StringValue(value), nil
+		}
+		return fallback, nil
+
+	case ListValue:
+		n, ok := numeric(args[1])
+		if !ok {
+			return nil, fmt.Errorf("для списка нужен числовой индекс, получено %s", args[1].TypeName())
+		}
+		index := int(n)
+		if index < 0 {
+			index += len(container)
+		}
+		if index < 0 || index >= len(container) {
+			return fallback, nil
+		}
+		return container[index], nil
+
+	default:
+		return nil, fmt.Errorf("get применим к словарю, конфигу или списку, получено %s", args[0].TypeName())
+	}
+}
+
+// builtinPut изменяет контейнер на месте и возвращает его же.
+// Словарь и конфиг — ссылочные значения, копия здесь только запутала бы:
+// половина изменений уходила бы в никуда.
+func builtinPut(_ *Interpreter, args []Value) (Value, error) {
+	key := args[1].Text()
+
+	switch container := args[0].(type) {
+	case MapValue:
+		container[key] = args[2]
+		return container, nil
+	case ConfigValue:
+		container.Set(key, args[2].Text())
+		return container, nil
+	default:
+		return nil, fmt.Errorf("put применим к словарю или конфигу, получено %s", args[0].TypeName())
+	}
+}
+
+func builtinMerge(_ *Interpreter, args []Value) (Value, error) {
+	switch left := args[0].(type) {
+	case MapValue:
+		right, ok := args[1].(MapValue)
+		if !ok {
+			return nil, fmt.Errorf("merge ожидает два словаря, справа %s", args[1].TypeName())
+		}
+		// Результат новый: merge не должен незаметно менять исходные данные.
+		merged := make(MapValue, len(left)+len(right))
+		for key, value := range left {
+			merged[key] = value
+		}
+		for key, value := range right {
+			merged[key] = value
+		}
+		return merged, nil
+
+	case ConfigValue:
+		right, err := configOf(args[1])
+		if err != nil {
+			return nil, err
+		}
+
+		merged := ConfigValue{
+			Name: left.Name + "+" + right.Name,
+			Data: make(core.ConfigMap, len(left.Data)),
+		}
+		for _, source := range []ConfigValue{left, right} {
+			for section, params := range source.Data {
+				if _, ok := merged.Data[section]; !ok {
+					merged.Data[section] = make(map[string]string, len(params))
+				}
+				for key, value := range params {
+					merged.Data[section][key] = value
+				}
+			}
+		}
+		return merged, nil
+
+	default:
+		return nil, fmt.Errorf("merge применим к словарям или конфигам, получено %s", args[0].TypeName())
+	}
+}
+
+func builtinSave(_ *Interpreter, args []Value) (Value, error) {
+	cfg, err := configOf(args[0])
+	if err != nil {
+		return nil, err
+	}
+
+	path := args[1].Text()
+	if err := core.SaveConfig(cfg.Data, path); err != nil {
+		return nil, err
+	}
+	return IntValue(cfg.Params()), nil
+}
+
+func stringList(items []string) ListValue {
+	values := make(ListValue, len(items))
+	for i, item := range items {
+		values[i] = StringValue(item)
+	}
+	return values
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +573,10 @@ func builtinLen(_ *Interpreter, args []Value) (Value, error) {
 	switch v := args[0].(type) {
 	case ListValue:
 		return IntValue(len(v)), nil
+	case MapValue:
+		return IntValue(len(v)), nil
+	case ConfigValue:
+		return IntValue(v.Params()), nil
 	case StringValue:
 		return IntValue(len([]rune(v))), nil
 	case NullValue:
