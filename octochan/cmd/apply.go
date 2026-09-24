@@ -17,7 +17,7 @@ import (
 var waitDone bool
 
 var applyCmd = &cobra.Command{
-	Use:   "apply <сценарий|-> [key=value ...]",
+	Use:   "apply <сценарий|-> [key=value ...] | apply --request <id>",
 	Short: "Выполнить сценарий",
 	Long: "Способ выполнения выбирается по полю service самого сценария:\n" +
 		"каждый сервис зарегистрирован своим исполнителем. Флага для выбора\n" +
@@ -27,6 +27,10 @@ var applyCmd = &cobra.Command{
 	Example: "ochan apply scenario.yaml role=standalone\n" +
 		"cat scenario.yaml | ochan apply -",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if applyRequestID != "" {
+			return applyApprovedRequest(cmd)
+		}
+
 		target, overrides, err := scenarioArgs(args)
 		if err != nil {
 			return err
@@ -71,6 +75,8 @@ var applyCmd = &cobra.Command{
 				TaskIDs:    result.Refs,
 				Reversible: false,
 			})
+			notify(cmd, fmt.Sprintf("Сценарий %s выполнен", src.Name),
+				applyMailBody(src.Name, parsed, result), nil)
 		}
 		if err != nil {
 			return err
@@ -81,6 +87,97 @@ var applyCmd = &cobra.Command{
 		}
 		return waitForRefs(cmd, runner, result)
 	},
+}
+
+// applyMailBody описывает выполненный сценарий для письма.
+//
+// В письме перечисляются ссылки на созданное: получатель узнаёт не только
+// что сценарий отработал, но и за чем именно идти смотреть.
+func applyMailBody(name string, parsed *scenario.Scenario, result *scenario.Result) string {
+	body := fmt.Sprintf("Сценарий: %s\nСервис: %s\nИтог: %s\n",
+		name, parsed.Service, result.Summary)
+	if len(parsed.Targets) > 0 {
+		body += fmt.Sprintf("Целей: %d\n", len(parsed.Targets))
+	}
+	if len(result.Refs) > 0 {
+		body += "\nСоздано:\n"
+		for _, ref := range result.Refs {
+			body += "  - " + ref + "\n"
+		}
+	}
+	return body
+}
+
+// applyApprovedRequest выполняет согласованную заявку.
+//
+// Выполняется текст сценария, сохранённый в самой заявке, а не перечитанный
+// с диска файл: между согласованием и выполнением его могли поправить,
+// и тогда выполнилось бы не то, на что сказали «да».
+func applyApprovedRequest(cmd *cobra.Command) error {
+	store, err := requestStore()
+	if err != nil {
+		return err
+	}
+
+	request, err := store.Get(applyRequestID)
+	if err != nil {
+		return err
+	}
+	if request.State != workspace.RequestApproved {
+		return fmt.Errorf("заявка %s не согласована (%s): выполнять нельзя",
+			request.ID, request.State.Russian())
+	}
+	if request.Service == "" {
+		return fmt.Errorf("заявка %s описывает правку файла; выполните её командой patch",
+			request.ID)
+	}
+
+	parsed, err := scenario.Parse(request.Source, []byte(request.Payload))
+	if err != nil {
+		return fmt.Errorf("сохранённый в заявке сценарий не разбирается: %w", err)
+	}
+
+	runner, err := scenario.Resolve(parsed.Service)
+	if err != nil {
+		return err
+	}
+
+	cmd.Printf("Заявка %s, сервис %s, исполнитель %s\n", request.ID, parsed.Service, runner.Kind())
+
+	result, applyErr := runner.Apply(cmd.Context(), parsed)
+
+	var refs []string
+	if result != nil {
+		refs = result.Refs
+	}
+	if len(refs) > 0 {
+		cmd.Println("✅ Создано:")
+		for _, ref := range refs {
+			cmd.Printf("  - %s\n", ref)
+		}
+
+		if err := store.MarkApplied(request, refs); err != nil {
+			cmd.PrintErrf("⚠️ не удалось отметить заявку выполненной: %v\n", err)
+		}
+		record(cmd, &workspace.Entry{
+			Kind:       workspace.EntryApply,
+			Command:    "apply --request " + request.ID,
+			Source:     request.Source,
+			Target:     parsed.Service,
+			Summary:    result.Summary,
+			TaskIDs:    refs,
+			Reversible: false,
+		})
+		notify(cmd, fmt.Sprintf("Заявка %s выполнена", request.ID), requestMailBody(request), nil)
+	}
+
+	if applyErr != nil {
+		return applyErr
+	}
+	if !waitDone && !viper.GetBool("defaults.auto_check_status") {
+		return nil
+	}
+	return waitForRefs(cmd, runner, result)
 }
 
 // scenarioArgs разбирает аргументы команд apply и plan: источник сценария

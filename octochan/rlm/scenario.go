@@ -129,7 +129,7 @@ func PlanScenario(ctx context.Context, api ScenarioAPI, data *scenario.Scenario)
 	}
 
 	plan := &config.Plan{
-		Command:     "apply --rlm",
+		Command:     "apply",
 		Source:      data.Service,
 		Destructive: isDestructiveService(data.Service),
 	}

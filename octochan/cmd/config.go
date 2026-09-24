@@ -64,6 +64,17 @@ func initConfig() error {
 	viper.SetDefault("defaults.token_timer_enabled", true)
 	viper.SetDefault("defaults.token_lifetime", "20m")
 
+	// Почта. Пароль сюда не кладётся никогда — он читается из переменной
+	// окружения OCTOCHAN_SMTP_PASSWORD, потому что конфиг лежит на диске
+	// и попадает в резервные копии.
+	viper.SetDefault("defaults.smtp_host", "")
+	viper.SetDefault("defaults.smtp_port", 25)
+	viper.SetDefault("defaults.smtp_from", "")
+	viper.SetDefault("defaults.smtp_to", []string{})
+	viper.SetDefault("defaults.smtp_user", "")
+	viper.SetDefault("defaults.smtp_starttls", false)
+	viper.SetDefault("defaults.notify_always", false)
+
 	path := configPath(fm)
 	viper.SetConfigFile(path)
 

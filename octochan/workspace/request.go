@@ -1,0 +1,258 @@
+package workspace
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"octochan/config"
+)
+
+// RequestState — состояние заявки.
+type RequestState string
+
+const (
+	// RequestPending — заявка ждёт решения.
+	RequestPending RequestState = "pending"
+	// RequestApproved — заявка согласована и может быть выполнена.
+	RequestApproved RequestState = "approved"
+	// RequestRejected — заявка отклонена.
+	RequestRejected RequestState = "rejected"
+	// RequestApplied — заявка выполнена.
+	RequestApplied RequestState = "applied"
+)
+
+func (s RequestState) Russian() string {
+	switch s {
+	case RequestPending:
+		return "ждёт решения"
+	case RequestApproved:
+		return "согласована"
+	case RequestRejected:
+		return "отклонена"
+	case RequestApplied:
+		return "выполнена"
+	default:
+		return string(s)
+	}
+}
+
+// Request — заявка на изменение.
+//
+// RBAC здесь нет и пока не нужно: заявка отвечает не на вопрос «кому
+// в принципе можно», а на вопрос «на это конкретное изменение сказали да».
+// Аудитору нужен именно второй ответ, и он же соответствует тому процессу,
+// который в организациях уже есть на бумаге.
+type Request struct {
+	ID      string       `json:"id"`
+	State   RequestState `json:"state"`
+	Created time.Time    `json:"created"`
+	Author  string       `json:"author"`
+
+	// Source — откуда взят план: файл сценария или пара конфигов.
+	Source string `json:"source"`
+	// Service непуст, если заявка на выполнение сценария.
+	Service string `json:"service,omitempty"`
+	// Target — куда применяется, если это правка конфига.
+	Target  string       `json:"target,omitempty"`
+	Summary string       `json:"summary"`
+	Plan    *config.Plan `json:"plan"`
+
+	// Payload — исходный текст сценария, чтобы выполнить ровно то,
+	// что согласовали, а не перечитанный с диска изменившийся файл.
+	Payload string `json:"payload,omitempty"`
+
+	Decision   string    `json:"decision,omitempty"`
+	DecidedBy  string    `json:"decided_by,omitempty"`
+	DecidedAt  time.Time `json:"decided_at,omitempty"`
+	AppliedAt  time.Time `json:"applied_at,omitempty"`
+	AppliedRef []string  `json:"applied_refs,omitempty"`
+}
+
+// Describe возвращает однострочное описание для списка.
+func (r *Request) Describe() string {
+	parts := []string{
+		r.Created.Local().Format("2006-01-02 15:04"),
+		r.ID,
+		fmt.Sprintf("%-12s", r.State.Russian()),
+	}
+	if r.Service != "" {
+		parts = append(parts, r.Service)
+	} else if r.Target != "" {
+		parts = append(parts, r.Target)
+	}
+	parts = append(parts, r.Summary)
+	return strings.Join(parts, "  ")
+}
+
+// Requests — хранилище заявок на диске.
+type Requests struct {
+	dir string
+}
+
+// NewRequests открывает хранилище заявок.
+func NewRequests(dir string) (*Requests, error) {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
+		return nil, fmt.Errorf("не удалось создать директорию заявок: %w", err)
+	}
+	return &Requests{dir: dir}, nil
+}
+
+// Dir возвращает путь к хранилищу.
+func (r *Requests) Dir() string { return r.dir }
+
+func (r *Requests) path(id string) string {
+	return filepath.Join(r.dir, id+".json")
+}
+
+// Create сохраняет новую заявку.
+func (r *Requests) Create(request *Request) error {
+	if request.ID == "" {
+		id, err := generateID()
+		if err != nil {
+			return err
+		}
+		request.ID = id
+	}
+	if request.Created.IsZero() {
+		request.Created = time.Now().UTC()
+	}
+	if request.Author == "" {
+		request.Author = currentUser()
+	}
+	if request.State == "" {
+		request.State = RequestPending
+	}
+	return r.save(request)
+}
+
+func (r *Requests) save(request *Request) error {
+	data, err := json.MarshalIndent(request, "", "  ")
+	if err != nil {
+		return fmt.Errorf("не удалось сериализовать заявку: %w", err)
+	}
+	if err := os.WriteFile(r.path(request.ID), data, filePerm); err != nil {
+		return fmt.Errorf("не удалось записать заявку: %w", err)
+	}
+	return nil
+}
+
+// Get находит заявку по идентификатору или его началу.
+func (r *Requests) Get(id string) (*Request, error) {
+	if id == "" {
+		return nil, fmt.Errorf("не указан идентификатор заявки")
+	}
+
+	all, err := r.List()
+	if err != nil {
+		return nil, err
+	}
+
+	var matches []*Request
+	for _, request := range all {
+		if request.ID == id {
+			return request, nil
+		}
+		if strings.HasPrefix(request.ID, id) {
+			matches = append(matches, request)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("заявка %q не найдена", id)
+	case 1:
+		return matches[0], nil
+	default:
+		ids := make([]string, len(matches))
+		for i, request := range matches {
+			ids[i] = request.ID
+		}
+		sort.Strings(ids)
+		return nil, fmt.Errorf("префикс %q подходит нескольким заявкам: %s", id, strings.Join(ids, ", "))
+	}
+}
+
+// List возвращает заявки от новых к старым.
+func (r *Requests) List() ([]*Request, error) {
+	entries, err := os.ReadDir(r.dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("не удалось прочитать заявки: %w", err)
+	}
+
+	requests := make([]*Request, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+
+		data, err := os.ReadFile(filepath.Join(r.dir, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("не удалось прочитать %s: %w", entry.Name(), err)
+		}
+
+		var request Request
+		if err := json.Unmarshal(data, &request); err != nil {
+			return nil, fmt.Errorf("повреждена заявка %s: %w", entry.Name(), err)
+		}
+		requests = append(requests, &request)
+	}
+
+	// Порядок задан полностью: одного времени создания мало, потому что
+	// часы грубее, чем цикл создания заявок, и одинаковые отметки времени —
+	// обычное дело. Без второго ключа один и тот же набор заявок выводился
+	// бы в разном порядке от запуска к запуску, а это журнал согласований.
+	sort.Slice(requests, func(i, j int) bool {
+		if !requests[i].Created.Equal(requests[j].Created) {
+			return requests[i].Created.After(requests[j].Created)
+		}
+		return requests[i].ID < requests[j].ID
+	})
+	return requests, nil
+}
+
+// Decide переводит заявку в согласованную или отклонённую.
+//
+// Решение принимается один раз: повторное согласование уже выполненной
+// заявки или пересмотр отклонённой — это новая заявка, а не правка старой.
+// Иначе журнал перестаёт отвечать на вопрос, что именно было одобрено.
+func (r *Requests) Decide(request *Request, state RequestState, who, comment string) error {
+	if state != RequestApproved && state != RequestRejected {
+		return fmt.Errorf("недопустимое решение: %s", state)
+	}
+	if request.State != RequestPending {
+		return fmt.Errorf("заявка %s уже %s — решение принимается один раз",
+			request.ID, request.State.Russian())
+	}
+
+	request.State = state
+	request.Decision = comment
+	request.DecidedBy = who
+	if request.DecidedBy == "" {
+		request.DecidedBy = currentUser()
+	}
+	request.DecidedAt = time.Now().UTC()
+
+	return r.save(request)
+}
+
+// MarkApplied отмечает заявку выполненной.
+func (r *Requests) MarkApplied(request *Request, refs []string) error {
+	if request.State != RequestApproved {
+		return fmt.Errorf("заявка %s не согласована (%s): выполнять нечего",
+			request.ID, request.State.Russian())
+	}
+
+	request.State = RequestApplied
+	request.AppliedAt = time.Now().UTC()
+	request.AppliedRef = refs
+
+	return r.save(request)
+}
