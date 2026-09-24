@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"octochan/rlm"
+	"octochan/scenario"
 )
 
 // intelService — служебный сценарий разведки, который собирает сведения
@@ -66,12 +67,12 @@ type MainPayload struct {
 // Сначала на каждый CI запускается задача разведки, затем по её результату
 // формируется основной запрос.
 type PsqlTuningParamsModule struct {
-	data   *rlm.ScenarioData
+	data   *scenario.Scenario
 	params Params
 }
 
 // NewPsqlTuningParamsModule создаёт модуль сервиса psql_tuning_params_se.
-func NewPsqlTuningParamsModule(data *rlm.ScenarioData) (rlm.ScenarioModule, error) {
+func NewPsqlTuningParamsModule(data *scenario.Scenario) (rlm.ScenarioModule, error) {
 	return &PsqlTuningParamsModule{data: data, params: Params(data.Parameters)}, nil
 }
 

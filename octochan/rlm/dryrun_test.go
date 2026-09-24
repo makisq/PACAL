@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"octochan/scenario"
 )
 
 // stubAPI — минимальная реализация ScenarioAPI для проверки обёртки.
@@ -92,7 +94,7 @@ func TestRealClientIsNotDryRun(t *testing.T) {
 
 // blockingModule имитирует модуль, обращающийся к API на этапе подготовки.
 type blockingModule struct {
-	data   *ScenarioData
+	data   *scenario.Scenario
 	posted bool
 }
 
@@ -112,15 +114,15 @@ func TestPlanScenarioCannotCreateTasks(t *testing.T) {
 	const service = "тест_план_защита"
 
 	var module *blockingModule
-	RegisterScenarioModule(service, func(data *ScenarioData) (ScenarioModule, error) {
+	RegisterScenarioModule(service, func(data *scenario.Scenario) (ScenarioModule, error) {
 		module = &blockingModule{data: data}
 		return module, nil
 	})
 
 	stub := &stubAPI{}
-	scenario := []byte(`{"service":"` + service + `","targets":[{"svm_ci":"CI-1"}]}`)
+	scenarioJSON := []byte(`{"service":"` + service + `","targets":[{"svm_ci":"CI-1"}]}`)
 
-	plan, err := PlanScenario(context.Background(), stub, scenario, nil)
+	plan, err := PlanScenario(context.Background(), stub, mustParse(t, scenarioJSON))
 	if err != nil {
 		t.Fatalf("PlanScenario вернул ошибку вместо неполного плана: %v", err)
 	}
@@ -148,14 +150,14 @@ func TestPlanScenarioFullPlanWithoutAPI(t *testing.T) {
 	// Модуль, которому API не нужен, даёт полный план и не трогает сеть.
 	const service = "тест_план_полный"
 
-	RegisterScenarioModule(service, func(data *ScenarioData) (ScenarioModule, error) {
+	RegisterScenarioModule(service, func(data *scenario.Scenario) (ScenarioModule, error) {
 		return &offlineModule{data: data}, nil
 	})
 
 	stub := &stubAPI{}
-	scenario := []byte(`{"service":"` + service + `","targets":[{"svm_ci":"CI-1"},{"svm_ci":"CI-2"}]}`)
+	scenarioJSON := []byte(`{"service":"` + service + `","targets":[{"svm_ci":"CI-1"},{"svm_ci":"CI-2"}]}`)
 
-	plan, err := PlanScenario(context.Background(), stub, scenario, nil)
+	plan, err := PlanScenario(context.Background(), stub, mustParse(t, scenarioJSON))
 	if err != nil {
 		t.Fatalf("PlanScenario: %v", err)
 	}
@@ -175,7 +177,7 @@ func TestPlanScenarioFullPlanWithoutAPI(t *testing.T) {
 	}
 }
 
-type offlineModule struct{ data *ScenarioData }
+type offlineModule struct{ data *scenario.Scenario }
 
 func (m *offlineModule) Validate() error { return nil }
 
@@ -198,16 +200,26 @@ func TestPlanMarksDestructiveService(t *testing.T) {
 	// Сервисы, прерывающие обслуживание, должны быть видны в плане сразу.
 	const service = "тест_restart_сервис"
 
-	RegisterScenarioModule(service, func(data *ScenarioData) (ScenarioModule, error) {
+	RegisterScenarioModule(service, func(data *scenario.Scenario) (ScenarioModule, error) {
 		return &offlineModule{data: data}, nil
 	})
 
 	plan, err := PlanScenario(context.Background(), &stubAPI{},
-		[]byte(`{"service":"`+service+`","targets":[{"svm_ci":"CI-1"}]}`), nil)
+		mustParse(t, []byte(`{"service":"`+service+`","targets":[{"svm_ci":"CI-1"}]}`)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !plan.Destructive {
 		t.Error("сервис с restart в имени не помечен как прерывающий обслуживание")
 	}
+}
+
+// mustParse разбирает сценарий или прекращает тест.
+func mustParse(t *testing.T, data []byte) *scenario.Scenario {
+	t.Helper()
+	s, err := scenario.Parse("<тест>", data)
+	if err != nil {
+		t.Fatalf("разбор сценария: %v", err)
+	}
+	return s
 }

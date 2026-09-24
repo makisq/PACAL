@@ -6,17 +6,18 @@ import (
 	"time"
 
 	"octochan/rlm"
+	"octochan/scenario"
 )
 
 // PostgresConfigFilesModule забирает конфигурационные файлы PostgreSQL.
 type PostgresConfigFilesModule struct {
-	data   *rlm.ScenarioData
+	data   *scenario.Scenario
 	params Params
 }
 
 // NewPostgresConfigFilesModule создаёт модуль сервиса
 // postgresql_se_get_config_files.
-func NewPostgresConfigFilesModule(data *rlm.ScenarioData) (rlm.ScenarioModule, error) {
+func NewPostgresConfigFilesModule(data *scenario.Scenario) (rlm.ScenarioModule, error) {
 	return &PostgresConfigFilesModule{data: data, params: Params(data.Parameters)}, nil
 }
 
@@ -45,7 +46,7 @@ func (m *PostgresConfigFilesModule) GenerateRequests(_ context.Context, _ rlm.Sc
 	requests := make([]*rlm.APIRequest, 0, len(m.data.Targets))
 
 	for _, target := range m.data.Targets {
-		items, err := rlm.PrepareScenarioItems([]rlm.Target{target}, tableID)
+		items, err := rlm.PrepareScenarioItems([]scenario.Target{target}, tableID)
 		if err != nil {
 			return nil, err
 		}

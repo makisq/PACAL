@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"octochan/rlm"
+	"octochan/scenario"
 )
 
 // defaultTableID — таблица инвентаря по умолчанию.
@@ -14,12 +15,12 @@ const defaultTableID = "psqlseclusterstandalone"
 
 // PgBouncerTuningModule настраивает pgbouncer на целевых серверах.
 type PgBouncerTuningModule struct {
-	data   *rlm.ScenarioData
+	data   *scenario.Scenario
 	params Params
 }
 
 // NewPgBouncerTuningModule создаёт модуль сервиса psqlse_tuningpgbouncer.
-func NewPgBouncerTuningModule(data *rlm.ScenarioData) (rlm.ScenarioModule, error) {
+func NewPgBouncerTuningModule(data *scenario.Scenario) (rlm.ScenarioModule, error) {
 	return &PgBouncerTuningModule{data: data, params: Params(data.Parameters)}, nil
 }
 
@@ -58,7 +59,7 @@ func (m *PgBouncerTuningModule) GenerateRequests(_ context.Context, _ rlm.Scenar
 			},
 		}
 
-		items, err := rlm.PrepareScenarioItems([]rlm.Target{target}, tableID)
+		items, err := rlm.PrepareScenarioItems([]scenario.Target{target}, tableID)
 		if err != nil {
 			return nil, err
 		}

@@ -7,127 +7,192 @@ import (
 	"strings"
 
 	"octochan/config"
-	"octochan/rlm"
+	"octochan/scenario"
 	"octochan/workspace"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
-var (
-	useRLM   bool
-	waitDone bool
-)
+var waitDone bool
 
 var applyCmd = &cobra.Command{
-	Use:   "apply [--rlm] <file|-> [key=value ...]",
-	Short: "Применить сценарий или конфигурацию",
-	Args:  cobra.MinimumNArgs(0),
-	Example: "ochan apply --rlm scenario.yaml role=standalone\n" +
-		"cat scenario.yaml | ochan apply --rlm -",
+	Use:   "apply <сценарий|-> [key=value ...]",
+	Short: "Выполнить сценарий",
+	Long: "Способ выполнения выбирается по полю service самого сценария:\n" +
+		"каждый сервис зарегистрирован своим исполнителем. Флага для выбора\n" +
+		"внешней системы нет — она такой же исполнитель, как и любой другой.\n\n" +
+		"Чтобы применить конфиг к файлу, используйте patch.",
+	Args: cobra.MinimumNArgs(0),
+	Example: "ochan apply scenario.yaml role=standalone\n" +
+		"cat scenario.yaml | ochan apply -",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !useRLM {
-			return applyPlainConfig(cmd, args)
+		target, overrides, err := scenarioArgs(args)
+		if err != nil {
+			return err
 		}
-		return applyRLMScenario(cmd, args)
+
+		src, err := readSource(target)
+		if err != nil {
+			return err
+		}
+
+		parsed, err := parseScenario(src)
+		if err != nil {
+			return err
+		}
+		parsed = parsed.WithOverrides(overrides)
+
+		runner, err := scenario.Resolve(parsed.Service)
+		if err != nil {
+			return err
+		}
+
+		log.Printf("apply: сценарий %s, сервис %s, исполнитель %s",
+			src.Name, parsed.Service, runner.Kind())
+		cmd.Printf("Сервис %s, исполнитель %s\n", parsed.Service, runner.Kind())
+
+		result, err := runner.Apply(cmd.Context(), parsed)
+
+		if result != nil && len(result.Refs) > 0 {
+			cmd.Println("✅ Создано:")
+			for _, ref := range result.Refs {
+				cmd.Printf("  - %s\n", ref)
+			}
+
+			// След должен остаться даже при последующей ошибке: сделанное
+			// во внешней системе уже сделано.
+			record(cmd, &workspace.Entry{
+				Kind:       workspace.EntryApply,
+				Command:    "apply",
+				Source:     src.Name,
+				Target:     parsed.Service,
+				Summary:    result.Summary,
+				TaskIDs:    result.Refs,
+				Reversible: false,
+			})
+		}
+		if err != nil {
+			return err
+		}
+
+		if !waitDone && !viper.GetBool("defaults.auto_check_status") {
+			return nil
+		}
+		return waitForRefs(cmd, runner, result)
 	},
 }
 
-func applyPlainConfig(cmd *cobra.Command, args []string) error {
-	path, err := argOrStdin(args, 0)
+// scenarioArgs разбирает аргументы команд apply и plan: источник сценария
+// и переопределения параметров.
+func scenarioArgs(args []string) (string, map[string]string, error) {
+	target, err := argOrStdin(args, 0)
 	if err != nil {
-		return fmt.Errorf("для обычного применения укажите файл конфигурации: %w", err)
-	}
-
-	src, err := readSource(path)
-	if err != nil {
-		return err
-	}
-	cfg, err := config.ParseConfig(src.Content)
-	if err != nil {
-		return fmt.Errorf("%s: %w", src.Name, err)
-	}
-
-	total := 0
-	for _, params := range cfg {
-		total += len(params)
-	}
-	cmd.Printf("Разобран конфиг %s: секций %d, параметров %d\n", src.Name, len(cfg), total)
-	return nil
-}
-
-func applyRLMScenario(cmd *cobra.Command, args []string) error {
-	// Первый аргумент — файл сценария (или "-"), остальные — переопределения
-	// параметров. Прежняя версия при пустом args безусловно читала stdin
-	// и на терминале зависала навсегда.
-	scenarioPath, err := argOrStdin(args, 0)
-	if err != nil {
-		return fmt.Errorf("укажите файл сценария или подайте его на stdin: %w", err)
+		return "", nil, fmt.Errorf("укажите файл сценария или подайте его на stdin: %w", err)
 	}
 
 	overrides := args
 	if len(args) > 0 {
 		overrides = args[1:]
 	}
-	customParams, err := parseCustomParams(overrides)
+
+	params, err := parseCustomParams(overrides)
 	if err != nil {
-		return err
+		return "", nil, err
+	}
+	return target, params, nil
+}
+
+// parseScenario разбирает сценарий и отдельно объясняет частую ошибку —
+// поданный вместо сценария конфигурационный файл.
+func parseScenario(src source) (*scenario.Scenario, error) {
+	parsed, err := scenario.Parse(src.Name, []byte(src.Content))
+	if err == nil {
+		return parsed, nil
 	}
 
-	src, err := readSource(scenarioPath)
+	// Проверяем по содержимому, а не по виду ошибки: conf-файл не доходит
+	// до ErrNotScenario, потому что YAML спотыкается раньше — на строке
+	// вида «key = value», которую не может положить в структуру.
+	if looksLikeConfig(src.Content) {
+		return nil, fmt.Errorf("%s похож на конфигурационный файл, а не на сценарий "+
+			"(в сценарии должно быть поле service);\n"+
+			"чтобы применить конфиг к файлу, используйте: ochan patch <база> %s",
+			src.Name, src.Name)
+	}
+	return nil, err
+}
+
+// looksLikeConfig сообщает, что перед нами конфигурация, а не сценарий.
+func looksLikeConfig(content string) bool {
+	cfg, err := config.ParseConfig(content)
 	if err != nil {
-		return err
+		return false
 	}
 
-	client, err := rlm.NewAPIClient()
-	if err != nil {
-		return err
+	total := 0
+	for _, params := range cfg {
+		total += len(params)
 	}
+	return total > 0
+}
 
-	log.Printf("apply: запуск сценария %s", src.Name)
-
-	ctx := cmd.Context()
-	taskIDs, err := rlm.ExecuteScenario(ctx, client, []byte(src.Content), customParams)
-
-	if len(taskIDs) > 0 {
-		cmd.Println("✅ Созданные задачи:")
-		for _, taskID := range taskIDs {
-			cmd.Printf("  - %s\n", taskID)
-		}
-
-		// Задачи во внешней системе необратимы: перезапуск уже произошёл,
-		// и отменять в октохане нечего. Но след остаться обязан.
-		record(cmd, &workspace.Entry{
-			Kind:       workspace.EntryApply,
-			Command:    "apply --rlm",
-			Source:     src.Name,
-			Summary:    fmt.Sprintf("создано задач: %d", len(taskIDs)),
-			TaskIDs:    taskIDs,
-			Reversible: false,
-		})
-	}
-	if err != nil {
-		return err
-	}
-
-	// Мониторинг выполняется здесь и синхронно. Раньше core запускал его
-	// в фоновой горутине, за которой никто не ждал: процесс завершался
-	// сразу после создания задач, и статус никогда не печатался.
-	if !waitDone && !viper.GetBool("defaults.auto_check_status") {
+// waitForRefs дожидается завершения созданных задач.
+//
+// Ожидание умеет пока только исполнитель RLM: у него задачи имеют статус,
+// который можно опросить. Для остальных ссылок просто говорим, что ждать
+// нечего, а не делаем вид, что подождали.
+func waitForRefs(cmd *cobra.Command, runner scenario.Runner, result *scenario.Result) error {
+	if result == nil || len(result.Refs) == 0 {
 		return nil
 	}
 
-	cmd.Println("\n🔄 Ожидание завершения задач...")
-	for _, taskID := range taskIDs {
-		status, err := client.WaitForTask(ctx, taskID, rlm.WaitOptions{
-			OnStatus: func(s string) { cmd.Printf("  %s: %s\n", taskID, s) },
-		})
+	waiter, ok := runner.(scenario.Waiter)
+	if !ok {
+		cmd.Printf("Исполнитель %s не умеет ждать завершения — ждать нечего.\n", runner.Kind())
+		return nil
+	}
+
+	cmd.Println("\n🔄 Ожидание завершения...")
+	for _, ref := range result.Refs {
+		status, err := waiter.Wait(cmd.Context(), ref)
 		if err != nil {
-			return fmt.Errorf("задача %s: %w", taskID, err)
+			return fmt.Errorf("%s: %w", ref, err)
 		}
-		cmd.Printf("  %s: завершена (%v)\n", taskID, status["status"])
+		cmd.Printf("  %s: завершено (%s)\n", ref, status)
 	}
 	return nil
+}
+
+var saveScenarioCmd = &cobra.Command{
+	Use:   "srs <scenario.yaml>",
+	Short: "Сохранить сценарий во внутреннее хранилище",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fm, err := mustFileManager()
+		if err != nil {
+			return err
+		}
+
+		src, err := readSource(args[0])
+		if err != nil {
+			return err
+		}
+
+		// Проверяем сценарий до сохранения, чтобы в хранилище не оседал мусор.
+		if _, err := parseScenario(src); err != nil {
+			return fmt.Errorf("сценарий не прошёл проверку: %w", err)
+		}
+
+		name := strings.TrimSuffix(filepath.Base(args[0]), filepath.Ext(args[0]))
+		path, err := fm.SaveScenario(name, []byte(src.Content))
+		if err != nil {
+			return err
+		}
+
+		cmd.Printf("✅ Сценарий сохранён: %s\n", path)
+		return nil
+	},
 }
 
 func parseCustomParams(args []string) (map[string]string, error) {
@@ -147,84 +212,26 @@ func parseCustomParams(args []string) (map[string]string, error) {
 	return params, nil
 }
 
-var statusCmd = &cobra.Command{
-	Use:   "status <task_id>",
-	Short: "Проверить статус выполнения задачи",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		client, err := rlm.NewAPIClient()
-		if err != nil {
-			return err
-		}
-
-		taskID := args[0]
-		status, err := client.TaskStatusWithEvents(cmd.Context(), taskID)
-		if err != nil {
-			return err
-		}
-
-		cmd.Printf("\n📊 Статус задачи %s\n", taskID)
-		cmd.Println("----------------------------")
-		printField(cmd, status, "status", "Состояние")
-		printField(cmd, status, "created_at", "Создана")
-		printField(cmd, status, "updated_at", "Обновлена")
-		if progress, ok := status["progress"].(float64); ok {
-			cmd.Printf("Прогресс: %.0f%%\n", progress)
-		}
-
-		events, ok := status["events"].([]map[string]any)
-		if !ok || len(events) == 0 {
-			return nil
-		}
-
-		cmd.Println("\n📝 Логи выполнения:")
-		for _, event := range events {
-			cmd.Printf("[%v] %v - %v\n", event["timestamp"], event["level"], event["message"])
-		}
-		return nil
-	},
+// serviceInfo — строка таблицы для команды services.
+type serviceInfo struct {
+	service string
+	kind    string
 }
 
-func printField(cmd *cobra.Command, data map[string]any, key, label string) {
-	if value, ok := data[key]; ok && value != nil {
-		cmd.Printf("%s: %v\n", label, value)
+func scenarioServices() []serviceInfo {
+	names := scenario.Services()
+	infos := make([]serviceInfo, 0, len(names))
+
+	for _, name := range names {
+		kind := "неизвестен"
+		if runner, err := scenario.Resolve(name); err == nil {
+			kind = runner.Kind()
+		}
+		infos = append(infos, serviceInfo{service: name, kind: kind})
 	}
-}
-
-var saveScenarioCmd = &cobra.Command{
-	Use:   "srs <scenario.yaml>",
-	Short: "Сохранить сценарий во внутреннее хранилище",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fm, err := mustFileManager()
-		if err != nil {
-			return err
-		}
-
-		src, err := readSource(args[0])
-		if err != nil {
-			return err
-		}
-
-		// Проверяем сценарий до сохранения, чтобы в хранилище не оседал мусор.
-		if _, err := rlm.ParseScenarioData([]byte(src.Content)); err != nil {
-			return fmt.Errorf("сценарий не прошёл проверку: %w", err)
-		}
-
-		name := strings.TrimSuffix(filepath.Base(args[0]), filepath.Ext(args[0]))
-		path, err := fm.SaveScenario(name, []byte(src.Content))
-		if err != nil {
-			return err
-		}
-
-		// Путь берётся из того же места, откуда его потом прочитает
-		// LoadScenario: раньше здесь печатался третий, неверный вариант.
-		cmd.Printf("✅ Сценарий сохранён: %s\n", path)
-		return nil
-	},
+	return infos
 }
 
 func init() {
-	applyCmd.Flags().BoolVarP(&useRLM, "rlm", "r", false, "выполнить как RLM-сценарий")
-	applyCmd.Flags().BoolVarP(&waitDone, "wait", "w", false, "дождаться завершения задач")
+	applyCmd.Flags().BoolVarP(&waitDone, "wait", "w", false, "дождаться завершения")
 }

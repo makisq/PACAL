@@ -56,6 +56,7 @@ func init() {
 		patchCmd,
 		applyCmd,
 		statusCmd,
+		servicesCmd,
 		validateCmd,
 		findCmd,
 		statsCmd,

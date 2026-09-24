@@ -2,7 +2,6 @@ package rlm
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -10,9 +9,9 @@ import (
 	"sync"
 
 	"github.com/spf13/viper"
-	"gopkg.in/yaml.v3"
 
 	"octochan/config"
+	"octochan/scenario"
 )
 
 // APIRequest — подготовленный модулем запрос к RLM API.
@@ -22,32 +21,6 @@ type APIRequest struct {
 	Method string
 	URL    string
 	Body   map[string]any
-}
-
-// Target — целевой сервер сценария.
-type Target struct {
-	SVMCI  string   `yaml:"svm_ci" json:"svm_ci"`
-	CIList []string `yaml:"ci_list" json:"ci_list"`
-	IP     string   `yaml:"ip" json:"ip"`
-}
-
-// GetCIs возвращает список CI цели.
-func (t *Target) GetCIs() []string {
-	if len(t.CIList) > 0 {
-		return t.CIList
-	}
-	if t.SVMCI != "" {
-		return []string{t.SVMCI}
-	}
-	return nil
-}
-
-// ScenarioData — разобранное описание сценария.
-type ScenarioData struct {
-	Service    string           `yaml:"service" json:"service"`
-	Parameters map[string]any   `yaml:"parameters" json:"parameters"`
-	Targets    []Target         `yaml:"targets" json:"targets"`
-	Items      []map[string]any `yaml:"items" json:"items"`
 }
 
 // ScenarioAPI — то, что модуль сценария вправе делать с внешней системой.
@@ -81,7 +54,7 @@ type ScenarioModule interface {
 }
 
 // ScenarioModuleCreator создаёт модуль по данным сценария.
-type ScenarioModuleCreator func(data *ScenarioData) (ScenarioModule, error)
+type ScenarioModuleCreator func(data *scenario.Scenario) (ScenarioModule, error)
 
 // Реестр модулей защищён мьютексом: регистрация выполняется из init()
 // нескольких пакетов, а чтение — из рабочих горутин.
@@ -90,13 +63,6 @@ var (
 	scenarioModules   = make(map[string]ScenarioModuleCreator)
 )
 
-// RegisterScenarioModule регистрирует модуль под именем сервиса.
-func RegisterScenarioModule(serviceName string, creator ScenarioModuleCreator) {
-	scenarioModulesMu.Lock()
-	defer scenarioModulesMu.Unlock()
-	scenarioModules[serviceName] = creator
-}
-
 func lookupScenarioModule(serviceName string) (ScenarioModuleCreator, bool) {
 	scenarioModulesMu.RLock()
 	defer scenarioModulesMu.RUnlock()
@@ -104,130 +70,11 @@ func lookupScenarioModule(serviceName string) (ScenarioModuleCreator, bool) {
 	return creator, ok
 }
 
-// RegisteredScenarioModules возвращает отсортированный список known-сервисов.
-func RegisteredScenarioModules() []string {
-	scenarioModulesMu.RLock()
-	defer scenarioModulesMu.RUnlock()
-
-	names := make([]string, 0, len(scenarioModules))
-	for name := range scenarioModules {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-// ParseScenarioData разбирает сценарий в формате JSON или YAML.
-func ParseScenarioData(data []byte) (*ScenarioData, error) {
-	// Промежуточная структура нужна из-за того, что targets исторически
-	// принимается и списком, и одиночным объектом.
-	type rawScenario struct {
-		Service    string           `json:"service" yaml:"service"`
-		Parameters map[string]any   `json:"parameters" yaml:"parameters"`
-		Targets    any              `json:"targets" yaml:"targets"`
-		Items      []map[string]any `json:"items" yaml:"items"`
-	}
-
-	var raw rawScenario
-	jsonErr := json.Unmarshal(data, &raw)
-	if jsonErr != nil {
-		raw = rawScenario{}
-		if yamlErr := yaml.Unmarshal(data, &raw); yamlErr != nil {
-			return nil, fmt.Errorf("не удалось разобрать сценарий: как JSON — %v; как YAML — %v", jsonErr, yamlErr)
-		}
-	}
-
-	s := &ScenarioData{
-		Service:    raw.Service,
-		Parameters: raw.Parameters,
-		Items:      raw.Items,
-	}
-
-	targets, err := parseTargets(raw.Targets)
-	if err != nil {
-		return nil, err
-	}
-	s.Targets = targets
-
-	if s.Service == "" {
-		return nil, errors.New("не указано имя сервиса (service)")
-	}
-	if len(s.Targets) == 0 && len(s.Items) == 0 {
-		return nil, errors.New("не указаны целевые серверы (targets) или items")
-	}
-	if s.Parameters == nil {
-		s.Parameters = make(map[string]any)
-	}
-
-	return s, nil
-}
-
-func parseTargets(raw any) ([]Target, error) {
-	switch v := raw.(type) {
-	case nil:
-		return nil, nil
-	case []any:
-		targets := make([]Target, 0, len(v))
-		for i, item := range v {
-			m, ok := item.(map[string]any)
-			if !ok {
-				return nil, fmt.Errorf("target #%d: ожидался объект, получено %T", i+1, item)
-			}
-			targets = append(targets, targetFromMap(m))
-		}
-		return targets, nil
-	case map[string]any:
-		return []Target{targetFromMap(v)}, nil
-	default:
-		return nil, fmt.Errorf("неподдерживаемый формат targets: %T", raw)
-	}
-}
-
-func targetFromMap(m map[string]any) Target {
-	var target Target
-
-	switch ci := m["svm_ci"].(type) {
-	case string:
-		target.SVMCI = ci
-		if ci != "" {
-			target.CIList = []string{ci}
-		}
-	case []any:
-		for _, item := range ci {
-			if s, ok := item.(string); ok && s != "" {
-				target.CIList = append(target.CIList, s)
-			}
-		}
-		if len(target.CIList) == 1 {
-			target.SVMCI = target.CIList[0]
-		}
-	}
-
-	// IP исторически встречается и как "ip", и как "IP".
-	for _, key := range []string{"ip", "IP"} {
-		if s, ok := m[key].(string); ok && s != "" {
-			target.IP = s
-			break
-		}
-	}
-
-	return target
-}
-
 // ExecuteScenario разбирает сценарий, валидирует его и выполняет запросы.
 // Возвращает идентификаторы созданных задач в порядке следования запросов.
-func ExecuteScenario(ctx context.Context, api ScenarioAPI, scenarioData []byte, customParams map[string]string) ([]string, error) {
-	if len(scenarioData) == 0 {
-		return nil, errors.New("пустые данные сценария")
-	}
-
-	data, err := ParseScenarioData(scenarioData)
-	if err != nil {
-		return nil, err
-	}
-
-	for key, val := range customParams {
-		data.Parameters[key] = val
+func ExecuteScenario(ctx context.Context, api ScenarioAPI, data *scenario.Scenario) ([]string, error) {
+	if data == nil {
+		return nil, errors.New("сценарий не задан")
 	}
 
 	module, err := buildModule(data)
@@ -247,11 +94,11 @@ func ExecuteScenario(ctx context.Context, api ScenarioAPI, scenarioData []byte, 
 }
 
 // buildModule создаёт и валидирует модуль сценария.
-func buildModule(data *ScenarioData) (ScenarioModule, error) {
+func buildModule(data *scenario.Scenario) (ScenarioModule, error) {
 	creator, ok := lookupScenarioModule(data.Service)
 	if !ok {
 		return nil, fmt.Errorf("модуль для сервиса %q не зарегистрирован; доступны: %v",
-			data.Service, RegisteredScenarioModules())
+			data.Service, scenario.Services())
 	}
 
 	module, err := creator(data)
@@ -271,17 +118,9 @@ func buildModule(data *ScenarioData) (ScenarioModule, error) {
 // к API уже на этапе подготовки, и без запрета «показать план» создавало бы
 // задачи разведки. Если модуль упирается в этот запрет, план получается
 // неполным — и об этом говорится прямо, а не замалчивается.
-func PlanScenario(ctx context.Context, api ScenarioAPI, scenarioData []byte, customParams map[string]string) (*config.Plan, error) {
-	if len(scenarioData) == 0 {
-		return nil, errors.New("пустые данные сценария")
-	}
-
-	data, err := ParseScenarioData(scenarioData)
-	if err != nil {
-		return nil, err
-	}
-	for key, val := range customParams {
-		data.Parameters[key] = val
+func PlanScenario(ctx context.Context, api ScenarioAPI, data *scenario.Scenario) (*config.Plan, error) {
+	if data == nil {
+		return nil, errors.New("сценарий не задан")
 	}
 
 	module, err := buildModule(data)
@@ -471,7 +310,7 @@ func submitRequests(ctx context.Context, api ScenarioAPI, requests []*APIRequest
 
 // PrepareScenarioItems собирает items для перечисленных целей.
 // tableID раньше был захардкожен внутри функции.
-func PrepareScenarioItems(targets []Target, tableID string) ([]map[string]string, error) {
+func PrepareScenarioItems(targets []scenario.Target, tableID string) ([]map[string]string, error) {
 	if tableID == "" {
 		return nil, errors.New("не указан table_id")
 	}

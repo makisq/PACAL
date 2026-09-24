@@ -9,6 +9,7 @@ import (
 
 	"octochan/config"
 	"octochan/rlm"
+	"octochan/scenario"
 )
 
 const pangolinTableID = "pangolinunique"
@@ -50,12 +51,12 @@ type PangolinRestartPayload struct {
 
 // PangolinRestartModule перезапускает экземпляры pangolin.
 type PangolinRestartModule struct {
-	data   *rlm.ScenarioData
+	data   *scenario.Scenario
 	params Params
 }
 
 // NewPangolinRestartModule создаёт модуль сервиса pangolin_restart.
-func NewPangolinRestartModule(data *rlm.ScenarioData) (rlm.ScenarioModule, error) {
+func NewPangolinRestartModule(data *scenario.Scenario) (rlm.ScenarioModule, error) {
 	return &PangolinRestartModule{data: data, params: Params(data.Parameters)}, nil
 }
 
@@ -164,7 +165,7 @@ func (m *PangolinRestartModule) itemsFromScenario() []PangolinRestartItem {
 	return items
 }
 
-func itemsFromTarget(target rlm.Target) []PangolinRestartItem {
+func itemsFromTarget(target scenario.Target) []PangolinRestartItem {
 	cis := target.GetCIs()
 	if len(cis) == 0 {
 		return []PangolinRestartItem{{TableID: pangolinTableID, InvsvmIP: target.IP}}

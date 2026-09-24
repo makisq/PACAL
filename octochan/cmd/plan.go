@@ -2,41 +2,47 @@ package cmd
 
 import (
 	"fmt"
-	"strings"
 
 	"octochan/config"
-	"octochan/rlm"
+	"octochan/scenario"
 
 	"github.com/spf13/cobra"
 )
 
-var planRLM bool
-
 var planCmd = &cobra.Command{
-	Use:   "plan <база> <изменения> | plan --rlm <сценарий> [key=value ...]",
+	Use:   "plan <сценарий> | plan <база> <изменения>",
 	Short: "Показать, что произойдёт, ничего не делая",
-	Long: "Для конфигов показывает, какие параметры изменит patch.\n" +
-		"Для сценариев (--rlm) показывает, какие задачи были бы созданы\n" +
-		"и на каких серверах.\n\n" +
-		"В режиме плана изменяющие запросы к API запрещены на уровне клиента,\n" +
-		"поэтому команда не может ничего создать даже по ошибке.",
+	Long: "С одним аргументом планирует сценарий: какие операции были бы\n" +
+		"выполнены и над чем. С двумя — показывает, какие параметры изменит\n" +
+		"patch.\n\n" +
+		"Способ выполнения сценария выбирается по его полю service, флага\n" +
+		"для этого нет. Изменяющие запросы в режиме плана запрещены на уровне\n" +
+		"клиента, поэтому команда не может ничего создать даже по ошибке.",
 	Args: cobra.MinimumNArgs(1),
-	Example: "ochan plan prod.conf changes.conf\n" +
-		"ochan plan эталон.conf postgres://dba@db1:5432/postgres\n" +
-		"ochan plan --rlm restart.yaml",
+	Example: "ochan plan restart.yaml\n" +
+		"ochan plan prod.conf changes.conf\n" +
+		"ochan plan эталон.conf postgres://dba@db1:5432/postgres",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if planRLM {
-			return planScenario(cmd, args)
+		// Два аргумента — это всегда сравнение конфигов: у сценария второго
+		// источника не бывает, у него есть только переопределения key=value.
+		if len(args) >= 2 && !isOverride(args[1]) {
+			return planConfig(cmd, args)
 		}
-		return planConfig(cmd, args)
+		return planScenario(cmd, args)
 	},
 }
 
-func planConfig(cmd *cobra.Command, args []string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("нужны два источника: база и изменения")
+// isOverride отличает переопределение параметра key=value от имени файла.
+func isOverride(arg string) bool {
+	for i := 1; i < len(arg); i++ {
+		if arg[i] == '=' {
+			return true
+		}
 	}
+	return false
+}
 
+func planConfig(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 	opts := config.SourceOptions{}
 
@@ -62,44 +68,37 @@ func planConfig(cmd *cobra.Command, args []string) error {
 }
 
 func planScenario(cmd *cobra.Command, args []string) error {
-	scenarioPath, err := argOrStdin(args, 0)
-	if err != nil {
-		return fmt.Errorf("укажите файл сценария: %w", err)
-	}
-
-	overrides := args
-	if len(args) > 0 {
-		overrides = args[1:]
-	}
-	customParams, err := parseCustomParams(overrides)
+	target, overrides, err := scenarioArgs(args)
 	if err != nil {
 		return err
 	}
 
-	src, err := readSource(scenarioPath)
+	src, err := readSource(target)
 	if err != nil {
 		return err
 	}
 
-	client, err := rlm.NewAPIClient()
+	parsed, err := parseScenario(src)
+	if err != nil {
+		return err
+	}
+	parsed = parsed.WithOverrides(overrides)
+
+	runner, err := scenario.Resolve(parsed.Service)
 	if err != nil {
 		return err
 	}
 
-	plan, err := rlm.PlanScenario(cmd.Context(), client, []byte(src.Content), customParams)
+	plan, err := runner.Plan(cmd.Context(), parsed)
 	if err != nil {
 		return err
 	}
 
-	plan.Source = fmt.Sprintf("%s (%s)", src.Name, plan.Source)
+	plan.Source = fmt.Sprintf("%s (%s, исполнитель %s)", src.Name, parsed.Service, runner.Kind())
 	cmd.Print(plan.Render(60))
 
 	if plan.Destructive {
-		cmd.Println("\nДля выполнения: ochan apply --rlm " + strings.Join(args, " "))
+		cmd.Printf("\nДля выполнения: ochan apply %s\n", target)
 	}
 	return nil
-}
-
-func init() {
-	planCmd.Flags().BoolVarP(&planRLM, "rlm", "r", false, "планировать RLM-сценарий")
 }

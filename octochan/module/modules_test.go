@@ -7,13 +7,14 @@ import (
 	"testing"
 
 	"octochan/rlm"
+	"octochan/scenario"
 )
 
 // buildScenario разбирает YAML-сценарий и создаёт модуль для его сервиса.
 func buildScenario(t *testing.T, yaml string) rlm.ScenarioModule {
 	t.Helper()
 
-	data, err := rlm.ParseScenarioData([]byte(yaml))
+	data, err := scenario.Parse("<тест>", []byte(yaml))
 	if err != nil {
 		t.Fatalf("разбор сценария: %v", err)
 	}
