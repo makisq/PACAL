@@ -1,59 +1,16 @@
+// Package module содержит встроенные модули сценариев RLM.
+//
+// Внешние модули команд подключаются иначе — через go-plugin,
+// см. pluginhost.ModuleManager. Прежняя реализация здесь пыталась ещё и
+// открывать .so через stdlib plugin: результат никуда не сохранялся,
+// ошибки глотались, а на Windows этот механизм не работает вовсе.
 package module
 
-import (
-	"octochan/core"
-	"os"
-	"path/filepath"
-	"plugin"
-	"sync"
-)
-
-var (
-	modulesLoaded   bool
-	modulesLoadLock sync.Mutex
-)
-
-func AutoRegisterModules() {
-	modulesLoadLock.Lock()
-	defer modulesLoadLock.Unlock()
-
-	if modulesLoaded {
-		return
-	}
-
-	fm, err := core.NewFileManager()
-	if err != nil {
-		return
-	}
-
-	loadModulesFromDir(fm.ModulesDir())
-
-	modulesLoaded = true
-}
-
-func loadModulesFromDir(dir string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-
-	for _, entry := range entries {
-		if filepath.Ext(entry.Name()) == ".so" {
-			modulePath := filepath.Join(dir, entry.Name())
-			_, err := plugin.Open(modulePath)
-			if err != nil {
-				continue
-			}
-		}
-	}
-}
-
-
+import "octochan/rlm"
 
 func init() {
-	core.RegisterScenarioModule("psqlse_tuningpgbouncer", NewPgBouncerTuningModule)
-	core.RegisterScenarioModule("psql_tuning_params_se", NewPsqlTuningParamsModule)
-	core.RegisterScenarioModule("postgresql_se_get_config_files", NewPostgresConfigFilesModule)
-	core.RegisterScenarioModule("pangolin_restart", NewPangolinRestartModule)
-	AutoRegisterModules()
+	rlm.RegisterScenarioModule("psqlse_tuningpgbouncer", NewPgBouncerTuningModule)
+	rlm.RegisterScenarioModule("psql_tuning_params_se", NewPsqlTuningParamsModule)
+	rlm.RegisterScenarioModule("postgresql_se_get_config_files", NewPostgresConfigFilesModule)
+	rlm.RegisterScenarioModule("pangolin_restart", NewPangolinRestartModule)
 }
